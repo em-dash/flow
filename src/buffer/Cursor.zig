@@ -168,11 +168,11 @@ fn move_buffer_last(self: *Self, root: Buffer.Root, metrics: Metrics) void {
     self.follow_target(root, metrics);
 }
 
-fn is_at_begin(self: *const Self) bool {
+pub fn is_at_begin(self: *const Self) bool {
     return self.col == 0;
 }
 
-fn is_at_end(self: *const Self, root: Buffer.Root, metrics: Metrics) bool {
+pub fn is_at_end(self: *const Self, root: Buffer.Root, metrics: Metrics) bool {
     return if (self.row < root.lines()) self.col == root.line_width(self.row, metrics) catch 0 else true;
 }
 

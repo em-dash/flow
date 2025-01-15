@@ -2243,6 +2243,21 @@ pub const Editor = struct {
         } else error.Stop;
     }
 
+    pub fn cut_selection_inclusive(self: *Self, root: Buffer.Root, cursel: *CurSel) !struct { []const u8, Buffer.Root } {
+        return if (cursel.selection) |sel| ret: {
+            var old_selection: Selection = sel;
+            try old_selection.end.move_right(root, self.metrics);
+            old_selection.normalize();
+            const cut_text = try copy_selection(root, sel, self.allocator, self.metrics);
+            if (cut_text.len > 100) {
+                self.logger.print("cut:{s}...", .{std.fmt.fmtSliceEscapeLower(cut_text[0..100])});
+            } else {
+                self.logger.print("cut:{s}", .{std.fmt.fmtSliceEscapeLower(cut_text)});
+            }
+            break :ret .{ cut_text, try self.delete_selection(root, cursel, try self.buf_a()) };
+        } else error.Stop;
+    }
+
     fn expand_selection_to_all(root: Buffer.Root, sel: *Selection, metrics: Buffer.Metrics) !void {
         try move_cursor_buffer_begin(root, &sel.begin, metrics);
         try move_cursor_buffer_end(root, &sel.end, metrics);
@@ -2285,6 +2300,34 @@ pub const Editor = struct {
         self.clamp();
     }
     pub const cut_meta = .{ .description = "Cut selection or current line to clipboard" };
+
+    pub fn cut_helix(self: *Self, _: Context) Result {
+        // const primary = self.get_primary();
+        const b = self.buf_for_update() catch return;
+        var root = b.root;
+        // if (self.cursels.items.len == 1)
+        //     if (primary.selection) |_| {} else {
+        //         const sel = primary.enable_selection();
+        //         try move_cursor_begin(root, &sel.begin, self.metrics);
+        //         try move_cursor_end(root, &sel.end, self.metrics);
+        //         try move_cursor_right(root, &sel.end, self.metrics);
+        //     };
+        // var first = true;
+        var text = std.ArrayList(u8).init(self.allocator);
+        for (self.cursels.items) |*cursel_| if (cursel_.*) |*cursel| {
+            const cut_text, root = try self.cut_selection_inclusive(root, cursel);
+            // if (first) {
+            //     first = false;
+            // } else {
+            try text.appendSlice("\n");
+            // }
+            try text.appendSlice(cut_text);
+        };
+        try self.update_buf(root);
+        self.set_clipboard(text.items);
+        self.clamp();
+    }
+    pub const cut_helix_meta = .{ .description = "Cut selection or character under cursor to clipboard" };
 
     pub fn copy(self: *Self, _: Context) Result {
         const root = self.buf_root() catch return;
@@ -3222,6 +3265,30 @@ pub const Editor = struct {
         try move_cursor_end(root, &sel.end, self.metrics);
         cursel.cursor = sel.end;
     }
+
+    pub fn extend_line_below(self: *Self, _: Context) Result {
+        for (self.cursels.items) |*cursel_| if (cursel_.*) |*cursel| {
+            const root = self.buf_root() catch return;
+            const metrics = self.metrics;
+            if (cursel.selection) |*sel| {
+                if (!sel.begin.is_at_begin() or !sel.end.is_at_end(root, metrics)) {
+                    try self.select_line_at_cursor(cursel);
+                } else {
+                    try sel.end.move_down(root, metrics);
+                    sel.end.move_end(root, metrics);
+                    cursel.cursor = sel.end;
+                }
+            } else if (false) {
+                // try sel.end.move_down(root, metrics);
+                // sel.end.move_end(root, metrics);
+                // try self.select_line_at_cursor(cursel);
+            } else {
+                try self.select_line_at_cursor(cursel);
+            }
+        };
+        self.clamp();
+    }
+    pub const extend_line_below_meta = .{ .description = "Expand selection to line, then extend down" };
 
     fn selection_reverse(_: Buffer.Root, cursel: *CurSel) !void {
         if (cursel.selection) |*sel| {
