@@ -33,6 +33,10 @@ pub fn reverse(self: *Self) void {
     self.end = tmp;
 }
 
+pub inline fn is_reversed(self: *const Self) bool {
+    return self.begin.right_of(self.end);
+}
+
 pub fn normalize(self: *Self) void {
     if (self.begin.right_of(self.end))
         self.reverse();
