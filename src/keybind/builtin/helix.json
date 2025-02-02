@@ -32,7 +32,7 @@
             ["alt+-", "merge_selections"],
             ["alt+_", "merge_consecutive_selections"],
 
-            ["alt+;", "flip_selections"],
+            ["alt+;", "selections_reverse"],
             ["alt+o", "expand_selection"],
             ["alt+up", "expand_selection"],
             ["alt+i", "shrink_selection"],
@@ -146,12 +146,13 @@
             ["a", ["move_right"], ["enter_mode", "insert"]],
             ["o", ["smart_insert_line_after"], ["enter_mode", "insert"]],
 
-            ["d", "cut"],
-            ["c", ["cut"], ["enter_mode", "insert"]],
+            ["d", "cut_char_or_selection"],
+            ["c", ["cut_char_or_selection"], ["enter_mode", "insert"]],
 
             ["s", "select_regex"],
             [";", "collapse_selections"],
             ["x", "extend_line_below"],
+            ["%", "select_all"],
 
             ["m m", "match_brackets"],
             ["m s", "surround_add"],
