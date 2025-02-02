@@ -3253,6 +3253,32 @@ pub const Editor = struct {
     }
     pub const select_all_meta = .{ .description = "Select all" };
 
+    pub fn extend_line_below(self: *Self, _: Context) Result {
+        const root = self.buf_root() catch return;
+
+        for (self.cursels.items) |*cursel_| if (cursel_.*) |*cursel| {
+            self.logger.print("blep: {any}", .{root.line_width(cursel.cursor.row, self.metrics)});
+            if (cursel.cursor.row >= root.lines() - 1) continue;
+            if (cursel.selection == null) cursel.cursor.move_begin();
+
+            const sel = try cursel.enable_selection(root, self.metrics);
+            if (!sel.begin.is_at_begin() and !sel.end.is_at_end(root, self.metrics) or root.line_width(cursel.cursor.row, self.metrics) catch 0 == 1) {
+                try self.select_line_at_cursor(cursel);
+                try sel.end.move_right(root, self.metrics);
+            } else {
+                if (!(cursel.cursor.is_at_begin() and cursel.cursor.is_at_end(root, self.metrics)))
+                    try sel.end.move_right(root, self.metrics);
+                sel.end.move_end(root, self.metrics);
+                try sel.end.move_right(root, self.metrics);
+            }
+            cursel.cursor = cursel.selection.?.end;
+
+            cursel.selection.?.normalize();
+        };
+        self.clamp();
+    }
+    pub const extend_line_below_meta = .{ .description = "Expand selection to line, then extend down" };
+
     fn select_word_at_cursor(self: *Self, cursel: *CurSel) !*Selection {
         const root = try self.buf_root();
         const sel = try cursel.enable_selection(root, self.metrics);
