@@ -3285,7 +3285,6 @@ pub const Editor = struct {
         const root = self.buf_root() catch return;
 
         for (self.cursels.items) |*cursel_| if (cursel_.*) |*cursel| {
-            self.logger.print("blep: {any}", .{root.line_width(cursel.cursor.row, self.metrics)});
             if (cursel.cursor.row >= root.lines() - 1) continue;
             if (cursel.selection == null) cursel.cursor.move_begin();
 
