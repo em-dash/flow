@@ -2425,6 +2425,52 @@ pub const Editor = struct {
     }
     pub const paste_meta = .{ .description = "Paste from internal clipboard" };
 
+    pub fn paste_after(self: *Self, ctx: Context) Result {
+        var text: []const u8 = undefined;
+        if (!(ctx.args.buf.len > 0 and try ctx.args.match(.{tp.extract(&text)}))) {
+            if (self.clipboard) |text_| text = text_ else return;
+        }
+        self.logger.print("paste: {d} bytes", .{text.len});
+        const b = try self.buf_for_update();
+        var root = b.root;
+        if (self.cursels.items.len == 1) {
+            var primary = self.get_primary();
+            if (primary.selection) |*sel| {
+                sel.normalize();
+                primary.disable_selection(root, self.metrics);
+            }
+            if (std.mem.indexOfScalar(u8, text, '\n')) |_| {
+                primary.cursor.move_end(root, self.metrics);
+            }
+            primary.cursor.move_right(root, self.metrics) catch {};
+            const old = primary.cursor;
+            primary.cursor.row, primary.cursor.col, root = try root.insert_chars(primary.cursor.row, primary.cursor.col, text, b.allocator, self.metrics);
+            primary.selection = .{ .begin = old, .end = primary.cursor };
+            primary.cursor = primary.selection.?.end;
+        } else {
+            if (std.mem.indexOfScalar(u8, text, '\n')) |_| {
+                var pos: usize = 0;
+                for (self.cursels.items) |*cursel_| if (cursel_.*) |*cursel| {
+                    if (std.mem.indexOfScalarPos(u8, text, pos, '\n')) |next| {
+                        root = try self.insert(root, cursel, text[pos..next], b.allocator);
+                        pos = next + 1;
+                    } else {
+                        root = try self.insert(root, cursel, text[pos..], b.allocator);
+                        pos = 0;
+                    }
+                };
+            } else {
+                for (self.cursels.items) |*cursel_| if (cursel_.*) |*cursel| {
+                    root = try self.insert(root, cursel, text, b.allocator);
+                };
+            }
+        }
+        try self.update_buf(root);
+        self.clamp();
+        self.need_render();
+    }
+    pub const paste_after_meta = .{ .description = "Paste from internal clipboard at end of selection" };
+
     pub fn delete_forward(self: *Self, _: Context) Result {
         const b = try self.buf_for_update();
         const root = try self.delete_to(move_cursor_right, b.root, b.allocator);
