@@ -149,9 +149,24 @@ pub const CurSel = struct {
     }
 
     fn check_selection(self: *Self, root: Buffer.Root, metrics: Buffer.Metrics) void {
+        switch (tui.get_selection_style()) {
+            .normal => self.check_selection_normal(root, metrics),
+            .inclusive => self.check_selection_inclusive(root, metrics),
+        }
+    }
+
+    fn check_selection_normal(self: *Self, root: Buffer.Root, metrics: Buffer.Metrics) void {
         if (self.selection) |sel| if (sel.empty()) {
             self.disable_selection(root, metrics);
         };
+    }
+
+    fn check_selection_inclusive(self: *Self, root: Buffer.Root, metrics: Buffer.Metrics) void {
+        if (self.selection) |sel| {
+            var temp = sel.begin;
+            temp.move_right(root, metrics) catch {};
+            if (sel.end.eql(temp)) self.disable_selection(root, metrics);
+        }
     }
 
     fn expand_selection_to_line(self: *Self, root: Buffer.Root, metrics: Buffer.Metrics) !*Selection {
@@ -1733,6 +1748,7 @@ pub const Editor = struct {
         const sel = try cursel.enable_selection(root, metrics);
         try move(root, &sel.end, metrics);
         cursel.cursor = sel.end;
+        // cursel.cursor = if (sel.is_reversed()) sel.begin else sel.end;
         cursel.check_selection(root, metrics);
     }
 
