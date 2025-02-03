@@ -2328,6 +2328,34 @@ pub const Editor = struct {
     }
     pub const cut_meta = .{ .description = "Cut selection or current line to clipboard" };
 
+    pub fn cut_char_or_selection(self: *Self, _: Context) Result {
+        const primary = self.get_primary();
+        const b = self.buf_for_update() catch return;
+        var root = b.root;
+        if (self.cursels.items.len == 1)
+            if (primary.selection) |_| {} else {
+                _ = primary.enable_selection(root, self.metrics) catch return;
+                // try move_cursor_begin(root, &sel.begin, self.metrics);
+                // try move_cursor_end(root, &sel.end, self.metrics);
+                // try move_cursor_right(root, &sel.end, self.metrics);
+            };
+        var first = true;
+        var text = std.ArrayList(u8).init(self.allocator);
+        for (self.cursels.items) |*cursel_| if (cursel_.*) |*cursel| {
+            const cut_text, root = try self.cut_selection(root, cursel);
+            if (first) {
+                first = false;
+            } else {
+                try text.appendSlice("\n");
+            }
+            try text.appendSlice(cut_text);
+        };
+        try self.update_buf(root);
+        self.set_clipboard(text.items);
+        self.clamp();
+    }
+    pub const cut_char_or_selection_meta = .{ .description = "Cut character under cursor or selection" };
+
     pub fn copy(self: *Self, _: Context) Result {
         const primary = self.get_primary();
         const root = self.buf_root() catch return;
