@@ -3225,6 +3225,26 @@ pub const Editor = struct {
     }
     pub const select_word_end_meta = .{ .description = "Select to end of word" };
 
+    pub fn move_next_word_end(self: *Self, _: Context) Result {
+        const root = try self.buf_root();
+        for (self.cursels.items) |*cursel_| if (cursel_.*) |*cursel| {
+            if (cursel.selection) |_| {
+                cursel.disable_selection(root, self.metrics);
+                cursel.cursor.move_right(root, self.metrics) catch {};
+            }
+        };
+        for (self.cursels.items) |*cursel_| if (cursel_.*) |*cursel| {
+            if (cursel.cursor.row == root.lines() - 1 and cursel.cursor.col == root.line_width(cursel.cursor.row, self.metrics) catch 1 - 1) {
+                return;
+            }
+            with_selection_const(root, move_cursor_word_end, cursel, self.metrics) catch {
+                cursel.cursor = cursel.selection.?.end;
+            };
+        };
+        self.clamp();
+    }
+    pub const move_next_word_end_meta = .{ .description = "Deselect then select to end of word" };
+
     pub fn select_to_char_left(self: *Self, ctx: Context) Result {
         const root = try self.buf_root();
         self.with_selections_const_arg(root, move_cursor_to_char_left, ctx) catch {};
