@@ -14,7 +14,7 @@ const build_options = @import("build_options");
 const Plane = @import("renderer").Plane;
 const input = @import("input");
 const command = @import("command");
-const BufferManager = @import("Buffer").Manager;
+const Buffer = @import("Buffer");
 
 const tui = @import("tui.zig");
 const Box = @import("Box.zig");
@@ -47,9 +47,8 @@ views_widget: Widget,
 active_view: ?usize = 0,
 panels: ?*WidgetList = null,
 last_match_text: ?[]const u8 = null,
-location_history: location_history,
-buffer_manager: BufferManager,
-file_stack: std.ArrayList([]const u8),
+location_history_: location_history,
+buffer_manager: Buffer.Manager,
 find_in_files_state: enum { init, adding, done } = .done,
 file_list_type: FileListType = .find_in_files,
 panel_height: ?usize = null,
@@ -64,34 +63,33 @@ pub fn create(allocator: std.mem.Allocator) !Widget {
     const self = try allocator.create(Self);
     self.* = .{
         .allocator = allocator,
-        .plane = tui.current().stdplane(),
+        .plane = tui.plane(),
         .widgets = undefined,
         .widgets_widget = undefined,
         .floating_views = WidgetStack.init(allocator),
-        .location_history = try location_history.create(),
-        .file_stack = std.ArrayList([]const u8).init(allocator),
+        .location_history_ = try location_history.create(),
         .views = undefined,
         .views_widget = undefined,
-        .buffer_manager = BufferManager.init(allocator),
+        .buffer_manager = Buffer.Manager.init(allocator),
     };
     try self.commands.init(self);
     const w = Widget.to(self);
 
-    const widgets = try WidgetList.createV(allocator, w, @typeName(Self), .dynamic);
+    const widgets = try WidgetList.createV(allocator, self.plane, @typeName(Self), .dynamic);
     self.widgets = widgets;
     self.widgets_widget = widgets.widget();
-    if (tui.current().config.top_bar.len > 0)
-        self.top_bar = try widgets.addP(try @import("status/bar.zig").create(allocator, w, tui.current().config.top_bar, .none, null));
+    if (tui.config().top_bar.len > 0)
+        self.top_bar = try widgets.addP(try @import("status/bar.zig").create(allocator, self.plane, tui.config().top_bar, .none, null));
 
-    const views = try WidgetList.createH(allocator, self.widgets_widget, @typeName(Self), .dynamic);
+    const views = try WidgetList.createH(allocator, self.plane, @typeName(Self), .dynamic);
     self.views = views;
     self.views_widget = views.widget();
     try views.add(try Widget.empty(allocator, self.views_widget.plane.*, .dynamic));
 
     try widgets.add(self.views_widget);
 
-    if (tui.current().config.bottom_bar.len > 0) {
-        self.bottom_bar = try widgets.addP(try @import("status/bar.zig").create(allocator, w, tui.current().config.bottom_bar, .grip, EventHandler.bind(self, handle_bottom_bar_event)));
+    if (tui.config().bottom_bar.len > 0) {
+        self.bottom_bar = try widgets.addP(try @import("status/bar.zig").create(allocator, self.plane, tui.config().bottom_bar, .grip, EventHandler.bind(self, handle_bottom_bar_event)));
     }
     if (tp.env.get().is("show-input"))
         self.toggle_inputview_async();
@@ -102,8 +100,6 @@ pub fn create(allocator: std.mem.Allocator) !Widget {
 
 pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
     self.close_all_panel_views();
-    self.clear_file_stack();
-    self.file_stack.deinit();
     self.commands.deinit();
     self.widgets.deinit(allocator);
     self.floating_views.deinit();
@@ -142,9 +138,6 @@ pub fn receive(self: *Self, from_: tp.pid_ref, m: tp.message) error{Exit}!bool {
                 .end = .{ .row = end_line, .col = end_pos },
             });
         return true;
-    } else if (try m.match(.{"write_restore_info"})) {
-        self.write_restore_info();
-        return true;
     }
     return if (try self.floating_views.send(from_, m)) true else self.widgets.send(from_, m);
 }
@@ -161,7 +154,7 @@ pub fn render(self: *Self, theme: *const Widget.Theme) bool {
 }
 
 pub fn handle_resize(self: *Self, pos: Box) void {
-    self.plane = tui.current().stdplane();
+    self.plane = tui.plane();
     if (self.panel_height) |h| if (h >= self.box().h) {
         self.panel_height = null;
     };
@@ -186,7 +179,7 @@ fn bottom_bar_primary_drag(self: *Self, y: usize) tp.result {
     };
     const h = self.plane.dim_y();
     self.panel_height = @max(1, h - @min(h, y + 1));
-    panels.layout = .{ .static = self.panel_height.? };
+    panels.layout_ = .{ .static = self.panel_height.? };
     if (self.panel_height == 1) {
         self.panel_height = null;
         command.executeName("toggle_panel", .{}) catch {};
@@ -207,12 +200,12 @@ fn toggle_panel_view(self: *Self, view: anytype, enable_only: bool) !void {
             try panels.add(try view.create(self.allocator, self.widgets.plane));
         }
     } else {
-        const panels = try WidgetList.createH(self.allocator, self.widgets.widget(), "panel", .{ .static = self.panel_height orelse self.box().h / 5 });
+        const panels = try WidgetList.createH(self.allocator, self.widgets.plane, "panel", .{ .static = self.panel_height orelse self.box().h / 5 });
         try self.widgets.add(panels.widget());
         try panels.add(try view.create(self.allocator, self.widgets.plane));
         self.panels = panels;
     }
-    tui.current().resize();
+    tui.resize();
 }
 
 fn get_panel_view(self: *Self, comptime view: type) ?*view {
@@ -228,7 +221,7 @@ fn close_all_panel_views(self: *Self) void {
         self.widgets.remove(panels.widget());
         self.panels = null;
     }
-    tui.current().resize();
+    tui.resize();
 }
 
 fn toggle_view(self: *Self, view: anytype) !void {
@@ -237,7 +230,7 @@ fn toggle_view(self: *Self, view: anytype) !void {
     } else {
         try self.widgets.add(try view.create(self.allocator, self.plane));
     }
-    tui.current().resize();
+    tui.resize();
 }
 
 fn check_all_not_dirty(self: *const Self) command.Result {
@@ -248,25 +241,26 @@ fn check_all_not_dirty(self: *const Self) command.Result {
 const cmds = struct {
     pub const Target = Self;
     const Ctx = command.Context;
+    const Meta = command.Metadata;
     const Result = command.Result;
 
     pub fn quit(self: *Self, _: Ctx) Result {
         try self.check_all_not_dirty();
         try tp.self_pid().send("quit");
     }
-    pub const quit_meta = .{ .description = "Quit (exit) Flow Control" };
+    pub const quit_meta: Meta = .{ .description = "Quit (exit) Flow Control" };
 
     pub fn quit_without_saving(_: *Self, _: Ctx) Result {
         try tp.self_pid().send("quit");
     }
-    pub const quit_without_saving_meta = .{ .description = "Quit without saving" };
+    pub const quit_without_saving_meta: Meta = .{ .description = "Quit without saving" };
 
     pub fn open_project_cwd(self: *Self, _: Ctx) Result {
         try project_manager.open(".");
         if (self.top_bar) |bar| _ = try bar.msg(.{ "PRJ", "open" });
         if (self.bottom_bar) |bar| _ = try bar.msg(.{ "PRJ", "open" });
     }
-    pub const open_project_cwd_meta = .{};
+    pub const open_project_cwd_meta: Meta = .{};
 
     pub fn open_project_dir(self: *Self, ctx: Ctx) Result {
         var project_dir: []const u8 = undefined;
@@ -274,11 +268,11 @@ const cmds = struct {
             return;
         try project_manager.open(project_dir);
         const project = tp.env.get().str("project");
-        tui.current().rdr.set_terminal_working_directory(project);
+        tui.rdr().set_terminal_working_directory(project);
         if (self.top_bar) |bar| _ = try bar.msg(.{ "PRJ", "open" });
         if (self.bottom_bar) |bar| _ = try bar.msg(.{ "PRJ", "open" });
     }
-    pub const open_project_dir_meta = .{ .arguments = &.{.string} };
+    pub const open_project_dir_meta: Meta = .{ .arguments = &.{.string} };
 
     pub fn change_project(self: *Self, ctx: Ctx) Result {
         var project_dir: []const u8 = undefined;
@@ -289,21 +283,21 @@ const cmds = struct {
             editor.clear_diagnostics();
             try editor.close_file(.{});
         }
-        self.clear_file_stack();
+        self.delete_all_buffers();
         self.clear_find_in_files_results(.diagnostics);
         if (self.file_list_type == .diagnostics and self.is_panel_view_showing(filelist_view))
             try self.toggle_panel_view(filelist_view, false);
         self.buffer_manager.deinit();
-        self.buffer_manager = BufferManager.init(self.allocator);
+        self.buffer_manager = Buffer.Manager.init(self.allocator);
         try project_manager.open(project_dir);
         const project = tp.env.get().str("project");
-        tui.current().rdr.set_terminal_working_directory(project);
+        tui.rdr().set_terminal_working_directory(project);
         if (self.top_bar) |bar| _ = try bar.msg(.{ "PRJ", "open" });
         if (self.bottom_bar) |bar| _ = try bar.msg(.{ "PRJ", "open" });
         if (try project_manager.request_most_recent_file(self.allocator)) |file_path|
             self.show_file_async_and_free(file_path);
     }
-    pub const change_project_meta = .{ .arguments = &.{.string} };
+    pub const change_project_meta: Meta = .{ .arguments = &.{.string} };
 
     pub fn navigate(self: *Self, ctx: Ctx) Result {
         tui.reset_drag_context();
@@ -348,6 +342,7 @@ const cmds = struct {
 
         const f = project_manager.normalize_file_path(file orelse return);
         const same_file = if (self.get_active_file_path()) |fp| std.mem.eql(u8, fp, f) else false;
+        const have_editor_metadata = if (self.buffer_manager.get_buffer_for_file(f)) |_| true else false;
 
         if (!same_file) {
             if (self.get_active_editor()) |editor| {
@@ -365,40 +360,132 @@ const cmds = struct {
             if (column) |col|
                 try command.executeName("goto_column", command.fmt(.{col}));
         } else {
-            if (!same_file)
+            if (!same_file and !have_editor_metadata)
                 try project_manager.get_mru_position(f);
         }
         tui.need_render();
     }
-    pub const navigate_meta = .{ .arguments = &.{.object} };
+    pub const navigate_meta: Meta = .{ .arguments = &.{.object} };
 
     pub fn open_help(self: *Self, _: Ctx) Result {
         tui.reset_drag_context();
         try self.create_editor();
-        try command.executeName("open_scratch_buffer", command.fmt(.{ "help.md", @embedFile("help.md") }));
+        try command.executeName("open_scratch_buffer", command.fmt(.{ "help", @embedFile("help.md"), "markdown" }));
         tui.need_render();
     }
-    pub const open_help_meta = .{ .description = "Open help" };
+    pub const open_help_meta: Meta = .{ .description = "Open help" };
+
+    pub fn open_font_test_text(self: *Self, _: Ctx) Result {
+        tui.reset_drag_context();
+        try self.create_editor();
+        try command.executeName("open_scratch_buffer", command.fmt(.{ "font test", @import("fonts.zig").font_test_text, "text" }));
+        tui.need_render();
+    }
+    pub const open_font_test_text_meta: Meta = .{ .description = "Open font glyph test text" };
+
+    pub fn open_version_info(self: *Self, _: Ctx) Result {
+        tui.reset_drag_context();
+        try self.create_editor();
+        try command.executeName("open_scratch_buffer", command.fmt(.{ "version", root.version_info, "diff" }));
+        tui.need_render();
+    }
+    pub const open_version_info_meta: Meta = .{ .description = "Show build version information" };
 
     pub fn open_config(_: *Self, _: Ctx) Result {
         const file_name = try root.get_config_file_name(@import("config"));
         try tp.self_pid().send(.{ "cmd", "navigate", .{ .file = file_name[0 .. file_name.len - 5] } });
     }
-    pub const open_config_meta = .{ .description = "Edit configuration file" };
+    pub const open_config_meta: Meta = .{ .description = "Edit configuration file" };
 
     pub fn open_gui_config(_: *Self, _: Ctx) Result {
         const file_name = try root.get_config_file_name(@import("gui_config"));
-        try tp.self_pid().send(.{ "cmd", "navigate", .{ .file = file_name[0 .. file_name.len - 5] } });
+        try tp.self_pid().send(.{ "cmd", "navigate", .{ .file = file_name[0 .. file_name.len - ".json".len] } });
     }
-    pub const open_gui_config_meta = .{ .description = "Edit gui configuration file" };
+    pub const open_gui_config_meta: Meta = .{ .description = "Edit gui configuration file" };
 
-    pub fn create_scratch_buffer(self: *Self, ctx: Ctx) Result {
+    pub fn open_tabs_style_config(self: *Self, _: Ctx) Result {
+        const Style = @import("status/tabs.zig").Style;
+        const file_name = try root.get_config_file_name(Style);
+        const tab_style, const tab_style_bufs: [][]const u8 = if (root.exists_config(Style)) blk: {
+            const tab_style, const tab_style_bufs = root.read_config(Style, self.allocator);
+            break :blk .{ tab_style, tab_style_bufs };
+        } else .{ Style{}, &.{} };
+        defer root.free_config(self.allocator, tab_style_bufs);
+        var conf = std.ArrayList(u8).init(self.allocator);
+        defer conf.deinit();
+        root.write_config_to_writer(Style, tab_style, conf.writer()) catch {};
         tui.reset_drag_context();
         try self.create_editor();
-        try command.executeName("open_scratch_buffer", ctx);
+        try command.executeName("open_scratch_buffer", command.fmt(.{
+            file_name[0 .. file_name.len - ".json".len],
+            conf.items,
+            "conf",
+        }));
+        if (self.get_active_buffer()) |buffer| buffer.mark_not_ephemeral();
+    }
+    pub const open_tabs_style_config_meta: Meta = .{ .description = "Edit tab styles configuration file" };
+
+    pub fn create_scratch_buffer(self: *Self, ctx: Ctx) Result {
+        const args = try ctx.args.clone(self.allocator);
+        defer self.allocator.free(args.buf);
+        tui.reset_drag_context();
+        try self.create_editor();
+        try command.executeName("open_scratch_buffer", .{ .args = args });
         tui.need_render();
     }
-    pub const create_scratch_buffer_meta = .{ .arguments = &.{ .string, .string } };
+    pub const create_scratch_buffer_meta: Meta = .{ .arguments = &.{ .string, .string, .string } };
+
+    pub fn create_new_file(self: *Self, _: Ctx) Result {
+        var n: usize = 1;
+        var found_unique = false;
+        var name = std.ArrayList(u8).init(self.allocator);
+        defer name.deinit();
+        while (!found_unique) {
+            name.clearRetainingCapacity();
+            try name.writer().print("Untitled-{d}", .{n});
+            if (self.buffer_manager.get_buffer_for_file(name.items)) |_| {
+                n += 1;
+            } else {
+                found_unique = true;
+            }
+        }
+        try command.executeName("create_scratch_buffer", command.fmt(.{name.items}));
+        try command.executeName("change_file_type", .{});
+    }
+    pub const create_new_file_meta: Meta = .{ .description = "Create: New File…" };
+
+    pub fn delete_buffer(self: *Self, ctx: Ctx) Result {
+        var file_path: []const u8 = undefined;
+        if (!(ctx.args.match(.{tp.extract(&file_path)}) catch false))
+            return error.InvalidDeleteBufferArgument;
+        const buffer = self.buffer_manager.get_buffer_for_file(file_path) orelse return;
+        if (buffer.is_dirty())
+            return tp.exit("unsaved changes");
+        if (self.get_active_editor()) |editor| if (editor.buffer == buffer)
+            editor.close_file(.{}) catch |e| return e;
+        _ = self.buffer_manager.delete_buffer(file_path);
+        const logger = log.logger("buffer");
+        defer logger.deinit();
+        logger.print("deleted buffer {s}", .{file_path});
+        tui.need_render();
+    }
+    pub const delete_buffer_meta: Meta = .{ .arguments = &.{.string} };
+
+    pub fn close_buffer(self: *Self, ctx: Ctx) Result {
+        var file_path: []const u8 = undefined;
+        if (!(ctx.args.match(.{tp.extract(&file_path)}) catch false))
+            return error.InvalidDeleteBufferArgument;
+        const buffer = self.buffer_manager.get_buffer_for_file(file_path) orelse return;
+        if (buffer.is_dirty())
+            return tp.exit("unsaved changes");
+        if (self.get_active_editor()) |editor| if (editor.buffer == buffer) {
+            editor.close_file(.{}) catch |e| return e;
+            return;
+        };
+        _ = self.buffer_manager.close_buffer(buffer);
+        tui.need_render();
+    }
+    pub const close_buffer_meta: Meta = .{ .arguments = &.{.string} };
 
     pub fn restore_session(self: *Self, _: Ctx) Result {
         if (tp.env.get().str("project").len == 0) {
@@ -408,7 +495,7 @@ const cmds = struct {
         try self.read_restore_info();
         tui.need_render();
     }
-    pub const restore_session_meta = .{};
+    pub const restore_session_meta: Meta = .{};
 
     pub fn toggle_panel(self: *Self, _: Ctx) Result {
         if (self.is_panel_view_showing(logview))
@@ -420,57 +507,57 @@ const cmds = struct {
         else
             try self.toggle_panel_view(logview, false);
     }
-    pub const toggle_panel_meta = .{ .description = "Toggle panel" };
+    pub const toggle_panel_meta: Meta = .{ .description = "Toggle panel" };
 
     pub fn toggle_logview(self: *Self, _: Ctx) Result {
         try self.toggle_panel_view(logview, false);
     }
-    pub const toggle_logview_meta = .{};
+    pub const toggle_logview_meta: Meta = .{};
 
     pub fn show_logview(self: *Self, _: Ctx) Result {
         try self.toggle_panel_view(logview, true);
     }
-    pub const show_logview_meta = .{ .description = "View log" };
+    pub const show_logview_meta: Meta = .{ .description = "View log" };
 
     pub fn toggle_inputview(self: *Self, _: Ctx) Result {
         try self.toggle_panel_view(@import("inputview.zig"), false);
     }
-    pub const toggle_inputview_meta = .{ .description = "Toggle raw input log" };
+    pub const toggle_inputview_meta: Meta = .{ .description = "Toggle raw input log" };
 
     pub fn toggle_inspector_view(self: *Self, _: Ctx) Result {
         try self.toggle_panel_view(@import("inspector_view.zig"), false);
     }
-    pub const toggle_inspector_view_meta = .{ .description = "Toggle inspector view" };
+    pub const toggle_inspector_view_meta: Meta = .{ .description = "Toggle inspector view" };
 
     pub fn show_inspector_view(self: *Self, _: Ctx) Result {
         try self.toggle_panel_view(@import("inspector_view.zig"), true);
     }
-    pub const show_inspector_view_meta = .{};
+    pub const show_inspector_view_meta: Meta = .{};
 
     pub fn jump_back(self: *Self, _: Ctx) Result {
-        try self.location_history.back(location_jump);
+        try self.location_history_.back(location_jump);
     }
-    pub const jump_back_meta = .{ .description = "Navigate back to previous history location" };
+    pub const jump_back_meta: Meta = .{ .description = "Navigate back to previous history location" };
 
     pub fn jump_forward(self: *Self, _: Ctx) Result {
-        try self.location_history.forward(location_jump);
+        try self.location_history_.forward(location_jump);
     }
-    pub const jump_forward_meta = .{ .description = "Navigate forward to next history location" };
+    pub const jump_forward_meta: Meta = .{ .description = "Navigate forward to next history location" };
 
     pub fn show_home(self: *Self, _: Ctx) Result {
         return self.create_home();
     }
-    pub const show_home_meta = .{};
+    pub const show_home_meta: Meta = .{};
 
     pub fn add_split(self: *Self, _: Ctx) Result {
         return self.create_home_split();
     }
-    pub const add_split_meta = .{};
+    pub const add_split_meta: Meta = .{};
 
     pub fn gutter_mode_next(self: *Self, _: Ctx) Result {
-        const tui_ = tui.current();
-        var ln = tui_.config.gutter_line_numbers;
-        var lnr = tui_.config.gutter_line_numbers_relative;
+        const config = tui.config_mut();
+        var ln = config.gutter_line_numbers;
+        var lnr = config.gutter_line_numbers_relative;
         if (ln and !lnr) {
             ln = true;
             lnr = true;
@@ -481,16 +568,32 @@ const cmds = struct {
             ln = true;
             lnr = false;
         }
-        tui_.config.gutter_line_numbers = ln;
-        tui_.config.gutter_line_numbers_relative = lnr;
-        try tui_.save_config();
+        config.gutter_line_numbers = ln;
+        config.gutter_line_numbers_relative = lnr;
+        try tui.save_config();
         if (self.widgets.get("editor_gutter")) |gutter_widget| {
             const gutter = gutter_widget.dynamic_cast(@import("editor_gutter.zig")) orelse return;
             gutter.linenum = ln;
             gutter.relative = lnr;
         }
     }
-    pub const gutter_mode_next_meta = .{ .description = "Next gutter mode" };
+    pub const gutter_mode_next_meta: Meta = .{ .description = "Next gutter mode" };
+
+    pub fn gutter_style_next(self: *Self, _: Ctx) Result {
+        const config = tui.config_mut();
+        config.gutter_line_numbers_style = switch (config.gutter_line_numbers_style) {
+            .ascii => .digital,
+            .digital => .subscript,
+            .subscript => .superscript,
+            .superscript => .ascii,
+        };
+        try tui.save_config();
+        if (self.widgets.get("editor_gutter")) |gutter_widget| {
+            const gutter = gutter_widget.dynamic_cast(@import("editor_gutter.zig")) orelse return;
+            gutter.render_style = config.gutter_line_numbers_style;
+        }
+    }
+    pub const gutter_style_next_meta: Meta = .{ .description = "Next line number style" };
 
     pub fn goto_next_file_or_diagnostic(self: *Self, ctx: Ctx) Result {
         if (self.is_panel_view_showing(filelist_view)) {
@@ -502,7 +605,7 @@ const cmds = struct {
             try command.executeName("goto_next_diagnostic", ctx);
         }
     }
-    pub const goto_next_file_or_diagnostic_meta = .{ .description = "Navigate to next file or diagnostic location" };
+    pub const goto_next_file_or_diagnostic_meta: Meta = .{ .description = "Navigate to next file or diagnostic location" };
 
     pub fn goto_prev_file_or_diagnostic(self: *Self, ctx: Ctx) Result {
         if (self.is_panel_view_showing(filelist_view)) {
@@ -514,7 +617,7 @@ const cmds = struct {
             try command.executeName("goto_prev_diagnostic", ctx);
         }
     }
-    pub const goto_prev_file_or_diagnostic_meta = .{ .description = "Navigate to previous file or diagnostic location" };
+    pub const goto_prev_file_or_diagnostic_meta: Meta = .{ .description = "Navigate to previous file or diagnostic location" };
 
     pub fn add_diagnostic(self: *Self, ctx: Ctx) Result {
         var file_path: []const u8 = undefined;
@@ -549,7 +652,7 @@ const cmds = struct {
                 ed.Diagnostic.to_severity(severity),
             );
     }
-    pub const add_diagnostic_meta = .{ .arguments = &.{ .string, .string, .string, .string, .integer, .integer, .integer, .integer, .integer } };
+    pub const add_diagnostic_meta: Meta = .{ .arguments = &.{ .string, .string, .string, .string, .integer, .integer, .integer, .integer, .integer } };
 
     pub fn rename_symbol_item(self: *Self, ctx: Ctx) Result {
         const editor = self.get_active_editor() orelse return;
@@ -593,8 +696,8 @@ const cmds = struct {
             }
         }
     }
-    pub const rename_symbol_item_meta = .{ .arguments = &.{.array} };
-    pub const rename_symbol_item_elem_meta = .{ .arguments = &.{ .string, .integer, .integer, .integer, .integer, .string } };
+    pub const rename_symbol_item_meta: Meta = .{ .arguments = &.{.array} };
+    pub const rename_symbol_item_elem_meta: Meta = .{ .arguments = &.{ .string, .integer, .integer, .integer, .integer, .string } };
 
     pub fn clear_diagnostics(self: *Self, ctx: Ctx) Result {
         var file_path: []const u8 = undefined;
@@ -607,7 +710,7 @@ const cmds = struct {
         if (self.file_list_type == .diagnostics and self.is_panel_view_showing(filelist_view))
             try self.toggle_panel_view(filelist_view, false);
     }
-    pub const clear_diagnostics_meta = .{ .arguments = &.{.string} };
+    pub const clear_diagnostics_meta: Meta = .{ .arguments = &.{.string} };
 
     pub fn show_diagnostics(self: *Self, _: Ctx) Result {
         const editor = self.get_active_editor() orelse return;
@@ -625,13 +728,12 @@ const cmds = struct {
             );
         }
     }
-    pub const show_diagnostics_meta = .{ .description = "Show diagnostics panel" };
+    pub const show_diagnostics_meta: Meta = .{ .description = "Show diagnostics panel" };
 
     pub fn open_previous_file(self: *Self, _: Ctx) Result {
-        const file_path = try project_manager.request_n_most_recent_file(self.allocator, 1);
-        self.show_file_async_and_free(file_path orelse return error.Stop);
+        self.show_file_async(self.get_next_mru_buffer() orelse return error.Stop);
     }
-    pub const open_previous_file_meta = .{ .description = "Open the previous file" };
+    pub const open_previous_file_meta: Meta = .{ .description = "Open the previous file" };
 
     pub fn system_paste(self: *Self, _: Ctx) Result {
         if (builtin.os.tag == .windows) {
@@ -639,9 +741,9 @@ const cmds = struct {
             defer self.allocator.free(text);
             return command.executeName("paste", command.fmt(.{text})) catch {};
         }
-        tui.current().rdr.request_system_clipboard();
+        tui.rdr().request_system_clipboard();
     }
-    pub const system_paste_meta = .{ .description = "Paste from system clipboard" };
+    pub const system_paste_meta: Meta = .{ .description = "Paste from system clipboard" };
 
     pub fn find_in_files_query(self: *Self, ctx: Ctx) Result {
         var query: []const u8 = undefined;
@@ -655,7 +757,7 @@ const cmds = struct {
         defer rg.deinit();
         self.find_in_files_state = .init;
     }
-    pub const find_in_files_query_meta = .{ .arguments = &.{.string} };
+    pub const find_in_files_query_meta: Meta = .{ .arguments = &.{.string} };
 
     pub fn shell_execute_log(self: *Self, ctx: Ctx) Result {
         if (!try ctx.args.match(.{ tp.string, tp.more }))
@@ -667,14 +769,14 @@ const cmds = struct {
             .exit = shell.log_exit_err_handler,
         });
     }
-    pub const shell_execute_log_meta = .{ .arguments = &.{.string} };
+    pub const shell_execute_log_meta: Meta = .{ .arguments = &.{.string} };
 
     pub fn shell_execute_insert(self: *Self, ctx: Ctx) Result {
         if (!try ctx.args.match(.{ tp.string, tp.more }))
             return error.InvalidShellArgument;
         const cmd = ctx.args;
         const handlers = struct {
-            fn out(parent: tp.pid_ref, _: []const u8, output: []const u8) void {
+            fn out(_: usize, parent: tp.pid_ref, _: []const u8, output: []const u8) void {
                 var pos: usize = 0;
                 var nl_count: usize = 0;
                 while (std.mem.indexOfScalarPos(u8, output, pos, '\n')) |next| {
@@ -693,46 +795,121 @@ const cmds = struct {
         };
         try shell.execute(self.allocator, cmd, .{ .out = handlers.out });
     }
-    pub const shell_execute_insert_meta = .{ .arguments = &.{.string} };
+    pub const shell_execute_insert_meta: Meta = .{ .arguments = &.{.string} };
+
+    pub fn shell_execute_stream(self: *Self, ctx: Ctx) Result {
+        if (!try ctx.args.match(.{ tp.string, tp.more }))
+            return error.InvalidShellArgument;
+        const cmd = ctx.args;
+        const handlers = struct {
+            fn out(buffer_ref: usize, parent: tp.pid_ref, _: []const u8, output: []const u8) void {
+                parent.send(.{ "cmd", "shell_execute_stream_output", .{ buffer_ref, output } }) catch {};
+            }
+            fn exit(buffer_ref: usize, parent: tp.pid_ref, arg0: []const u8, err_msg: []const u8, exit_code: i64) void {
+                var buf: [256]u8 = undefined;
+                var stream = std.io.fixedBufferStream(&buf);
+                const writer = stream.writer();
+                if (exit_code > 0) {
+                    writer.print("\n'{s}' terminated {s} exitcode: {d}\n", .{ arg0, err_msg, exit_code }) catch {};
+                } else {
+                    writer.print("\n'{s}' exited\n", .{arg0}) catch {};
+                }
+                parent.send(.{ "cmd", "shell_execute_stream_output", .{ buffer_ref, stream.getWritten() } }) catch {};
+                parent.send(.{ "cmd", "shell_execute_stream_output_complete", .{buffer_ref} }) catch {};
+            }
+        };
+        const editor = self.get_active_editor() orelse return error.Stop;
+        const buffer = editor.buffer orelse return error.Stop;
+        const buffer_ref = self.buffer_manager.buffer_to_ref(buffer);
+        try shell.execute(self.allocator, cmd, .{ .context = buffer_ref, .out = handlers.out, .err = handlers.out, .exit = handlers.exit });
+    }
+    pub const shell_execute_stream_meta: Meta = .{ .arguments = &.{.string} };
+
+    pub fn shell_execute_stream_output(self: *Self, ctx: Ctx) Result {
+        var buffer_ref: usize = 0;
+        var output: []const u8 = undefined;
+        if (!try ctx.args.match(.{ tp.extract(&buffer_ref), tp.extract(&output) }))
+            return error.InvalidShellOutputArgument;
+        const buffer = self.buffer_manager.buffer_from_ref(buffer_ref) orelse return;
+        if (self.get_active_editor()) |editor| if (editor.buffer) |eb| if (eb == buffer) {
+            editor.move_buffer_end(.{}) catch {};
+            editor.insert_chars(command.fmt(.{output})) catch {};
+            tui.need_render();
+            return;
+        };
+        var cursor: Buffer.Cursor = .{};
+        const metrics = self.plane.metrics(1);
+        cursor.move_buffer_end(buffer.root, metrics);
+        var root_ = buffer.root;
+        _, _, root_ = try root_.insert_chars(cursor.row, cursor.col, output, self.allocator, metrics);
+        buffer.store_undo(&[_]u8{}) catch {};
+        buffer.update(root_);
+        tui.need_render();
+    }
+    pub const shell_execute_stream_output_meta: Meta = .{ .arguments = &.{ .integer, .string } };
+
+    pub fn shell_execute_stream_output_complete(self: *Self, ctx: Ctx) Result {
+        var buffer_ref: usize = 0;
+        if (!try ctx.args.match(.{tp.extract(&buffer_ref)}))
+            return error.InvalidShellOutputCompleteArgument;
+        const buffer = self.buffer_manager.buffer_from_ref(buffer_ref) orelse return;
+        if (self.get_active_editor()) |editor| if (editor.buffer) |eb| if (eb == buffer) {
+            editor.forced_mark_clean(.{}) catch {};
+            return;
+        };
+        buffer.mark_clean();
+        tui.need_render();
+    }
+    pub const shell_execute_stream_output_complete_meta: Meta = .{ .arguments = &.{ .integer, .string } };
 
     pub fn adjust_fontsize(_: *Self, ctx: Ctx) Result {
         var amount: f32 = undefined;
         if (!try ctx.args.match(.{tp.extract(&amount)}))
             return error.InvalidArgument;
         if (build_options.gui)
-            tui.current().rdr.adjust_fontsize(amount);
+            tui.rdr().adjust_fontsize(amount);
     }
-    pub const adjust_fontsize_meta = .{ .arguments = &.{.float} };
+    pub const adjust_fontsize_meta: Meta = .{ .arguments = &.{.float} };
 
     pub fn set_fontsize(_: *Self, ctx: Ctx) Result {
         var fontsize: f32 = undefined;
         if (!try ctx.args.match(.{tp.extract(&fontsize)}))
             return error.InvalidArgument;
         if (build_options.gui)
-            tui.current().rdr.set_fontsize(fontsize);
+            tui.rdr().set_fontsize(fontsize);
     }
-    pub const set_fontsize_meta = .{ .arguments = &.{.float} };
+    pub const set_fontsize_meta: Meta = .{ .arguments = &.{.float} };
 
     pub fn reset_fontsize(_: *Self, _: Ctx) Result {
         if (build_options.gui)
-            tui.current().rdr.reset_fontsize();
+            tui.rdr().reset_fontsize();
     }
-    pub const reset_fontsize_meta = .{ .description = "Reset font to configured size" };
+    pub const reset_fontsize_meta: Meta = .{ .description = "Reset font to configured size" };
 
     pub fn set_fontface(_: *Self, ctx: Ctx) Result {
         var fontface: []const u8 = undefined;
         if (!try ctx.args.match(.{tp.extract(&fontface)}))
             return error.InvalidArgument;
         if (build_options.gui)
-            tui.current().rdr.set_fontface(fontface);
+            tui.rdr().set_fontface(fontface);
     }
-    pub const set_fontface_meta = .{ .arguments = &.{.float} };
+    pub const set_fontface_meta: Meta = .{ .arguments = &.{.float} };
 
     pub fn reset_fontface(_: *Self, _: Ctx) Result {
         if (build_options.gui)
-            tui.current().rdr.reset_fontface();
+            tui.rdr().reset_fontface();
     }
-    pub const reset_fontface_meta = .{ .description = "Reset font to configured face" };
+    pub const reset_fontface_meta: Meta = .{ .description = "Reset font to configured face" };
+
+    pub fn next_tab(self: *Self, _: Ctx) Result {
+        _ = try self.widgets_widget.msg(.{"next_tab"});
+    }
+    pub const next_tab_meta: Meta = .{ .description = "Switch to next tab" };
+
+    pub fn previous_tab(self: *Self, _: Ctx) Result {
+        _ = try self.widgets_widget.msg(.{"previous_tab"});
+    }
+    pub const previous_tab_meta: Meta = .{ .description = "Switch to previous tab" };
 };
 
 pub fn handle_editor_event(self: *Self, _: tp.pid_ref, m: tp.message) tp.result {
@@ -743,8 +920,8 @@ pub fn handle_editor_event(self: *Self, _: tp.pid_ref, m: tp.message) tp.result 
         return self.location_update(m);
 
     if (try m.match(.{ "E", "close" })) {
-        if (self.pop_file_stack(editor.file_path)) |file_path|
-            self.show_file_async_and_free(file_path)
+        if (self.get_next_mru_buffer()) |file_path|
+            self.show_file_async(file_path)
         else
             self.show_home_async();
         self.active_editor = null;
@@ -773,17 +950,18 @@ pub fn location_update(self: *Self, m: tp.message) tp.result {
     var row: usize = 0;
     var col: usize = 0;
     const file_path = self.get_active_file_path() orelse return;
+    const ephemeral = if (self.get_active_buffer()) |buffer| buffer.is_ephemeral() else false;
 
     if (try m.match(.{ tp.any, tp.any, tp.any, tp.extract(&row), tp.extract(&col) })) {
         if (row == 0 and col == 0) return;
-        project_manager.update_mru(file_path, row, col) catch {};
-        return self.location_history.update(file_path, .{ .row = row + 1, .col = col + 1 }, null);
+        project_manager.update_mru(file_path, row, col, ephemeral) catch {};
+        return self.location_history_.update(file_path, .{ .row = row + 1, .col = col + 1 }, null);
     }
 
     var sel: location_history.Selection = .{};
     if (try m.match(.{ tp.any, tp.any, tp.any, tp.extract(&row), tp.extract(&col), tp.extract(&sel.begin.row), tp.extract(&sel.begin.col), tp.extract(&sel.end.row), tp.extract(&sel.end.col) })) {
-        project_manager.update_mru(file_path, row, col) catch {};
-        return self.location_history.update(file_path, .{ .row = row + 1, .col = col + 1 }, sel);
+        project_manager.update_mru(file_path, row, col, ephemeral) catch {};
+        return self.location_history_.update(file_path, .{ .row = row + 1, .col = col + 1 }, sel);
     }
 }
 
@@ -825,6 +1003,10 @@ pub fn get_active_file_path(self: *Self) ?[]const u8 {
     return if (self.get_active_editor()) |editor| editor.file_path orelse null else null;
 }
 
+pub fn get_active_buffer(self: *Self) ?*Buffer {
+    return if (self.get_active_editor()) |editor| editor.buffer orelse null else null;
+}
+
 pub fn walk(self: *Self, ctx: *anyopaque, f: Widget.WalkFn, w: *Widget) bool {
     return self.floating_views.walk(ctx, f) or self.widgets.walk(ctx, f, &self.widgets_widget) or f(ctx, w);
 }
@@ -857,10 +1039,9 @@ fn replace_active_view(self: *Self, widget: Widget) !void {
 }
 
 fn create_editor(self: *Self) !void {
-    if (self.get_active_file_path()) |file_path| self.push_file_stack(file_path) catch {};
     try self.delete_active_view();
     command.executeName("enter_mode_default", .{}) catch {};
-    var editor_widget = try ed.create(self.allocator, Widget.to(self), &self.buffer_manager);
+    var editor_widget = try ed.create(self.allocator, self.plane, &self.buffer_manager);
     errdefer editor_widget.deinit(self.allocator);
     const editor = editor_widget.get("editor") orelse @panic("mainview editor not found");
     if (self.top_bar) |bar| editor.subscribe(EventHandler.to_unowned(bar)) catch @panic("subscribe unsupported");
@@ -869,7 +1050,7 @@ fn create_editor(self: *Self) !void {
     try self.replace_active_view(editor_widget);
     if (editor.dynamic_cast(ed.EditorWidget)) |p|
         try self.add_editor(&p.editor);
-    tui.current().resize();
+    tui.resize();
 }
 
 fn toggle_logview_async(_: *Self) void {
@@ -882,6 +1063,10 @@ fn toggle_inputview_async(_: *Self) void {
 
 fn show_file_async_and_free(self: *Self, file_path: []const u8) void {
     defer self.allocator.free(file_path);
+    self.show_file_async(file_path);
+}
+
+fn show_file_async(_: *Self, file_path: []const u8) void {
     tp.self_pid().send(.{ "cmd", "navigate", .{ .file = file_path } }) catch return;
 }
 
@@ -894,16 +1079,16 @@ fn create_home(self: *Self) !void {
     if (self.active_editor) |_| return;
     try self.delete_active_view();
     try self.replace_active_view(try home.create(self.allocator, Widget.to(self)));
-    tui.current().resize();
+    tui.resize();
 }
 
 fn create_home_split(self: *Self) !void {
     tui.reset_drag_context();
     try self.add_view(try home.create(self.allocator, Widget.to(self)));
-    tui.current().resize();
+    tui.resize();
 }
 
-fn write_restore_info(self: *Self) void {
+pub fn write_restore_info(self: *Self) void {
     const editor = self.get_active_editor() orelse return;
     var sfa = std.heap.stackFallback(512, self.allocator);
     const a = sfa.get();
@@ -924,27 +1109,25 @@ fn read_restore_info(self: *Self) !void {
     var buf = try self.allocator.alloc(u8, @intCast(stat.size));
     defer self.allocator.free(buf);
     const size = try file.readAll(buf);
-    try editor.extract_state(buf[0..size]);
+    try editor.extract_state(buf[0..size], .open_file);
 }
 
-fn push_file_stack(self: *Self, file_path: []const u8) !void {
-    for (self.file_stack.items, 0..) |file_path_, i|
-        if (std.mem.eql(u8, file_path, file_path_))
-            self.allocator.free(self.file_stack.orderedRemove(i));
-    (try self.file_stack.addOne()).* = try self.allocator.dupe(u8, file_path);
+fn get_next_mru_buffer(self: *Self) ?[]const u8 {
+    const buffers = self.buffer_manager.list_most_recently_used(self.allocator) catch return null;
+    defer self.allocator.free(buffers);
+    const active_file_path = self.get_active_file_path();
+    for (buffers) |buffer| {
+        if (active_file_path) |fp| if (std.mem.eql(u8, fp, buffer.file_path))
+            continue;
+        if (buffer.hidden)
+            continue;
+        return buffer.file_path;
+    }
+    return null;
 }
 
-fn pop_file_stack(self: *Self, closed: ?[]const u8) ?[]const u8 {
-    if (closed) |file_path|
-        for (self.file_stack.items, 0..) |file_path_, i|
-            if (std.mem.eql(u8, file_path, file_path_))
-                self.allocator.free(self.file_stack.orderedRemove(i));
-    return self.file_stack.popOrNull();
-}
-
-fn clear_file_stack(self: *Self) void {
-    for (self.file_stack.items) |file_path| self.allocator.free(file_path);
-    self.file_stack.clearRetainingCapacity();
+fn delete_all_buffers(self: *Self) void {
+    self.buffer_manager.delete_all();
 }
 
 fn add_find_in_files_result(

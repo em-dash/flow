@@ -7,6 +7,7 @@ const root = @import("root");
 
 const Plane = @import("renderer").Plane;
 const style = @import("renderer").style;
+const styles = @import("renderer").styles;
 const command = @import("command");
 const EventHandler = @import("EventHandler");
 
@@ -90,7 +91,7 @@ pub fn render(self: *Self, btn: *Button.State(Self), theme: *const Widget.Theme)
         btn.plane.fill(" ");
         btn.plane.home();
     }
-    if (tui.current().mini_mode) |_|
+    if (tui.mini_mode()) |_|
         render_mini_mode(&btn.plane, theme)
     else if (self.detailed)
         self.render_detailed(&btn.plane, theme)
@@ -101,15 +102,14 @@ pub fn render(self: *Self, btn: *Button.State(Self), theme: *const Widget.Theme)
 }
 
 fn render_mini_mode(plane: *Plane, theme: *const Widget.Theme) void {
-    plane.off_styles(style.italic);
-    const tui_ = tui.current();
-    const mini_mode = tui_.mini_mode orelse return;
+    plane.off_styles(styles.italic);
+    const mini_mode = tui.mini_mode() orelse return;
     _ = plane.print(" {s}", .{mini_mode.text}) catch {};
     if (mini_mode.cursor) |cursor| {
         const pos: c_int = @intCast(cursor);
-        if (tui_.config.enable_terminal_cursor) {
+        if (tui.config().enable_terminal_cursor) {
             const y, const x = plane.rel_yx_to_abs(0, pos + 1);
-            tui_.rdr.cursor_enable(y, x, tui_.get_cursor_shape()) catch {};
+            tui.rdr().cursor_enable(y, x, tui.get_cursor_shape()) catch {};
         } else {
             plane.cursor_move_yx(0, pos + 1) catch return;
             var cell = plane.cell_init();
@@ -130,7 +130,7 @@ fn render_mini_mode(plane: *Plane, theme: *const Widget.Theme) void {
 // 󱑛 Content save cog
 // 󰆔 Content save all
 fn render_normal(self: *Self, plane: *Plane, theme: *const Widget.Theme) void {
-    plane.on_styles(style.italic);
+    plane.on_styles(styles.italic);
     _ = plane.putstr(" ") catch {};
     if (self.file_icon.len > 0) {
         self.render_file_icon(plane, theme);
@@ -142,7 +142,7 @@ fn render_normal(self: *Self, plane: *Plane, theme: *const Widget.Theme) void {
 }
 
 fn render_detailed(self: *Self, plane: *Plane, theme: *const Widget.Theme) void {
-    plane.on_styles(style.italic);
+    plane.on_styles(styles.italic);
     _ = plane.putstr(" ") catch {};
     if (self.file_icon.len > 0) {
         self.render_file_icon(plane, theme);
@@ -189,7 +189,7 @@ fn render_terminal_title(self: *Self) void {
     if (std.mem.eql(u8, self.previous_title, new_title)) return;
     @memcpy(self.previous_title_buf[0..new_title.len], new_title);
     self.previous_title = self.previous_title_buf[0..new_title.len];
-    tui.current().rdr.set_terminal_title(new_title);
+    tui.rdr().set_terminal_title(new_title);
 }
 
 pub fn receive(self: *Self, _: *Button.State(Self), _: tp.pid_ref, m: tp.message) error{Exit}!bool {

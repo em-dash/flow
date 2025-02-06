@@ -1,8 +1,6 @@
 const std = @import("std");
 const tp = @import("thespian");
 
-const fba = std.heap.FixedBufferAllocator;
-
 const Self = @This();
 
 pub const max_log_message = tp.max_message_size - 128;
@@ -11,7 +9,7 @@ allocator: std.mem.Allocator,
 receiver: Receiver,
 subscriber: ?tp.pid,
 heap: [32 + 1024]u8,
-fba: fba,
+fba: std.heap.FixedBufferAllocator,
 msg_store: MsgStoreT,
 
 const MsgStoreT = std.DoublyLinkedList([]u8);
@@ -39,7 +37,7 @@ fn init(args: StartArgs) !*Self {
         .receiver = Receiver.init(Self.receive, p),
         .subscriber = null,
         .heap = undefined,
-        .fba = fba.init(&p.heap),
+        .fba = std.heap.FixedBufferAllocator.init(&p.heap),
         .msg_store = MsgStoreT{},
     };
     return p;
@@ -127,6 +125,8 @@ pub const Logger = struct {
     }
 
     pub fn err(self: Logger, context: []const u8, e: anyerror) void {
+        var msg_fmt = std.ArrayList(u8).init(std.heap.c_allocator);
+        defer msg_fmt.deinit();
         defer tp.reset_error();
         var buf: [max_log_message]u8 = undefined;
         var msg: []const u8 = "UNKNOWN";
@@ -140,7 +140,16 @@ pub const Logger = struct {
                 } else if (msg_.match(.{ "exit", tp.extract(&msg__), tp.extract(&trace__) }) catch false) {
                     //
                 } else {
-                    msg__ = msg_.buf;
+                    var failed = false;
+                    msg_fmt.writer().print("{}", .{msg_}) catch {
+                        failed = true;
+                    };
+                    if (failed) {
+                        msg_fmt.clearRetainingCapacity();
+                        msg_fmt.writer().print("{s}", .{std.fmt.fmtSliceEscapeLower(msg_.buf)}) catch {};
+                    }
+                    msg__ = msg_fmt.items;
+                    tp.trace(tp.channel.debug, .{ "log_err_fmt", msg__.len, msg__[0..@min(msg__.len, 128)] });
                 }
                 if (msg__.len > buf.len) {
                     self.proc.send(.{ "log", "error", self.tag, context, "->", "MESSAGE TOO LARGE" }) catch {};

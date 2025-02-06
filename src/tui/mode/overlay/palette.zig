@@ -14,7 +14,6 @@ const tui = @import("../../tui.zig");
 const Button = @import("../../Button.zig");
 const InputBox = @import("../../InputBox.zig");
 const Widget = @import("../../Widget.zig");
-const mainview = @import("../../mainview.zig");
 const scrollbar_v = @import("../../scrollbar_v.zig");
 const ModalBackground = @import("../../ModalBackground.zig");
 
@@ -47,15 +46,15 @@ pub fn Create(options: type) type {
         pub const ButtonState = Button.State(*Menu.State(*Self));
 
         pub fn create(allocator: std.mem.Allocator) !tui.Mode {
-            const mv = tui.current().mainview.dynamic_cast(mainview) orelse return error.NotFound;
+            const mv = tui.mainview() orelse return error.NotFound;
             const self: *Self = try allocator.create(Self);
             self.* = .{
                 .allocator = allocator,
-                .modal = try ModalBackground.create(*Self, allocator, tui.current().mainview, .{
+                .modal = try ModalBackground.create(*Self, allocator, tui.mainview_widget(), .{
                     .ctx = self,
                     .on_click = mouse_palette_menu_cancel,
                 }),
-                .menu = try Menu.create(*Self, allocator, tui.current().mainview, .{
+                .menu = try Menu.create(*Self, allocator, tui.plane(), .{
                     .ctx = self,
                     .on_render = if (@hasDecl(options, "on_render_menu")) options.on_render_menu else on_render_menu,
                     .on_resize = on_resize_menu,
@@ -68,7 +67,7 @@ pub fn Create(options: type) type {
                     .ctx = self,
                     .label = options.label,
                 }))).dynamic_cast(InputBox.State(*Self)) orelse unreachable,
-                .view_rows = get_view_rows(tui.current().screen()),
+                .view_rows = get_view_rows(tui.screen()),
                 .entries = std.ArrayList(Entry).init(allocator),
             };
             self.menu.scrollbar.?.style_factory = scrollbar_style;
@@ -92,8 +91,8 @@ pub fn Create(options: type) type {
             if (@hasDecl(options, "deinit"))
                 options.deinit(self);
             self.entries.deinit();
-            tui.current().message_filters.remove_ptr(self);
-            if (tui.current().mainview.dynamic_cast(mainview)) |mv| {
+            tui.message_filters().remove_ptr(self);
+            if (tui.mainview()) |mv| {
                 mv.floating_views.remove(self.menu.container_widget);
                 mv.floating_views.remove(self.modal.widget());
             }
@@ -160,7 +159,7 @@ pub fn Create(options: type) type {
         }
 
         fn do_resize(self: *Self) void {
-            const screen = tui.current().screen();
+            const screen = tui.screen();
             const w = @min(self.longest, max_menu_width) + 2 + 1 + self.longest_hint;
             const x = if (screen.w > w) (screen.w - w) / 2 else 0;
             self.view_rows = get_view_rows(screen);
@@ -246,7 +245,7 @@ pub fn Create(options: type) type {
                 while (i > 0) : (i -= 1)
                     self.menu.select_down();
                 self.do_resize();
-                tui.current().refresh_hover();
+                tui.refresh_hover();
                 self.selection_updated();
             }
         }
@@ -307,15 +306,15 @@ pub fn Create(options: type) type {
             } else {
                 self.inputbox.text.shrinkRetainingCapacity(0);
             }
-            self.inputbox.cursor = tui.current().stdplane().egc_chunk_width(self.inputbox.text.items, 0, 8);
+            self.inputbox.cursor = tui.egc_chunk_width(self.inputbox.text.items, 0, 8);
             self.view_pos = 0;
             return self.start_query(0);
         }
 
         fn delete_code_point(self: *Self) !void {
             if (self.inputbox.text.items.len > 0) {
-                self.inputbox.text.shrinkRetainingCapacity(self.inputbox.text.items.len - tui.current().stdplane().egc_last(self.inputbox.text.items).len);
-                self.inputbox.cursor = tui.current().stdplane().egc_chunk_width(self.inputbox.text.items, 0, 8);
+                self.inputbox.text.shrinkRetainingCapacity(self.inputbox.text.items.len - tui.egc_last(self.inputbox.text.items).len);
+                self.inputbox.cursor = tui.egc_chunk_width(self.inputbox.text.items, 0, 8);
             }
             self.view_pos = 0;
             return self.start_query(0);
@@ -325,14 +324,14 @@ pub fn Create(options: type) type {
             var buf: [6]u8 = undefined;
             const bytes = try input.ucs32_to_utf8(&[_]u32{c}, &buf);
             try self.inputbox.text.appendSlice(buf[0..bytes]);
-            self.inputbox.cursor = tui.current().stdplane().egc_chunk_width(self.inputbox.text.items, 0, 8);
+            self.inputbox.cursor = tui.egc_chunk_width(self.inputbox.text.items, 0, 8);
             self.view_pos = 0;
             return self.start_query(0);
         }
 
         fn insert_bytes(self: *Self, bytes: []const u8) !void {
             try self.inputbox.text.appendSlice(bytes);
-            self.inputbox.cursor = tui.current().stdplane().egc_chunk_width(self.inputbox.text.items, 0, 8);
+            self.inputbox.cursor = tui.egc_chunk_width(self.inputbox.text.items, 0, 8);
             self.view_pos = 0;
             return self.start_query(0);
         }
@@ -365,12 +364,16 @@ pub fn Create(options: type) type {
                 self.view_pos = 0;
             }
             self.update_scrollbar();
-            self.start_query(idx - self.view_pos - 1) catch {};
+            if (idx < self.view_pos + 1)
+                self.start_query(0) catch {}
+            else
+                self.start_query(idx - self.view_pos - 1) catch {};
         }
 
         const cmds = struct {
             pub const Target = Self;
             const Ctx = command.Context;
+            const Meta = command.Metadata;
             const Result = command.Result;
 
             pub fn palette_menu_down(self: *Self, _: Ctx) Result {
@@ -388,7 +391,7 @@ pub fn Create(options: type) type {
                 self.menu.select_down();
                 self.selection_updated();
             }
-            pub const palette_menu_down_meta = .{};
+            pub const palette_menu_down_meta: Meta = .{};
 
             pub fn palette_menu_up(self: *Self, _: Ctx) Result {
                 if (self.menu.selected) |selected| {
@@ -403,7 +406,7 @@ pub fn Create(options: type) type {
                 self.menu.select_up();
                 self.selection_updated();
             }
-            pub const palette_menu_up_meta = .{};
+            pub const palette_menu_up_meta: Meta = .{};
 
             pub fn palette_menu_pagedown(self: *Self, _: Ctx) Result {
                 if (self.total_items > self.view_rows) {
@@ -415,7 +418,7 @@ pub fn Create(options: type) type {
                 self.menu.select_last();
                 self.selection_updated();
             }
-            pub const palette_menu_pagedown_meta = .{};
+            pub const palette_menu_pagedown_meta: Meta = .{};
 
             pub fn palette_menu_pageup(self: *Self, _: Ctx) Result {
                 if (self.view_pos > self.view_rows)
@@ -426,33 +429,48 @@ pub fn Create(options: type) type {
                 self.menu.select_first();
                 self.selection_updated();
             }
-            pub const palette_menu_pageup_meta = .{};
+            pub const palette_menu_pageup_meta: Meta = .{};
+
+            pub fn palette_menu_delete_item(self: *Self, _: Ctx) Result {
+                if (@hasDecl(options, "delete_item")) {
+                    const button = self.menu.get_selected() orelse return;
+                    const refresh = options.delete_item(self.menu, button);
+                    if (refresh) {
+                        options.clear_entries(self);
+                        self.longest_hint = try options.load_entries(self);
+                        if (self.entries.items.len > 0)
+                            self.initial_selected = self.menu.selected;
+                        try self.start_query(0);
+                    }
+                }
+            }
+            pub const palette_menu_delete_item_meta: Meta = .{};
 
             pub fn palette_menu_activate(self: *Self, _: Ctx) Result {
                 self.menu.activate_selected();
             }
-            pub const palette_menu_activate_meta = .{};
+            pub const palette_menu_activate_meta: Meta = .{};
 
             pub fn palette_menu_activate_quick(self: *Self, _: Ctx) Result {
                 if (self.menu.selected orelse 0 > 0) self.menu.activate_selected();
             }
-            pub const palette_menu_activate_quick_meta = .{};
+            pub const palette_menu_activate_quick_meta: Meta = .{};
 
             pub fn palette_menu_cancel(self: *Self, _: Ctx) Result {
                 if (@hasDecl(options, "cancel")) try options.cancel(self);
                 try self.cmd("exit_overlay_mode", .{});
             }
-            pub const palette_menu_cancel_meta = .{};
+            pub const palette_menu_cancel_meta: Meta = .{};
 
             pub fn overlay_delete_word_left(self: *Self, _: Ctx) Result {
                 self.delete_word() catch |e| return tp.exit_error(e, @errorReturnTrace());
             }
-            pub const overlay_delete_word_left_meta = .{ .description = "Delete word to the left" };
+            pub const overlay_delete_word_left_meta: Meta = .{ .description = "Delete word to the left" };
 
             pub fn overlay_delete_backwards(self: *Self, _: Ctx) Result {
                 self.delete_code_point() catch |e| return tp.exit_error(e, @errorReturnTrace());
             }
-            pub const overlay_delete_backwards_meta = .{ .description = "Delete backwards" };
+            pub const overlay_delete_backwards_meta: Meta = .{ .description = "Delete backwards" };
 
             pub fn overlay_insert_code_point(self: *Self, ctx: Ctx) Result {
                 var egc: u32 = 0;
@@ -460,7 +478,7 @@ pub fn Create(options: type) type {
                     return error.InvalidPaletteInsertCodePointArgument;
                 self.insert_code_point(egc) catch |e| return tp.exit_error(e, @errorReturnTrace());
             }
-            pub const overlay_insert_code_point_meta = .{ .arguments = &.{.integer} };
+            pub const overlay_insert_code_point_meta: Meta = .{ .arguments = &.{.integer} };
 
             pub fn overlay_insert_bytes(self: *Self, ctx: Ctx) Result {
                 var bytes: []const u8 = undefined;
@@ -468,22 +486,22 @@ pub fn Create(options: type) type {
                     return error.InvalidPaletteInsertBytesArgument;
                 self.insert_bytes(bytes) catch |e| return tp.exit_error(e, @errorReturnTrace());
             }
-            pub const overlay_insert_bytes_meta = .{ .arguments = &.{.string} };
+            pub const overlay_insert_bytes_meta: Meta = .{ .arguments = &.{.string} };
 
             pub fn overlay_toggle_panel(self: *Self, _: Ctx) Result {
                 return self.cmd_async("toggle_panel");
             }
-            pub const overlay_toggle_panel_meta = .{};
+            pub const overlay_toggle_panel_meta: Meta = .{};
 
             pub fn overlay_toggle_inputview(self: *Self, _: Ctx) Result {
                 return self.cmd_async("toggle_inputview");
             }
-            pub const overlay_toggle_inputview_meta = .{};
+            pub const overlay_toggle_inputview_meta: Meta = .{};
 
             pub fn mini_mode_paste(self: *Self, ctx: Ctx) Result {
                 return overlay_insert_bytes(self, ctx);
             }
-            pub const mini_mode_paste_meta = .{ .arguments = &.{.string} };
+            pub const mini_mode_paste_meta: Meta = .{ .arguments = &.{.string} };
         };
     };
 }

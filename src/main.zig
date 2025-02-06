@@ -14,6 +14,8 @@ const c = @cImport({
 const build_options = @import("build_options");
 const log = @import("log");
 
+pub const version_info = @embedFile("version_info");
+
 pub var max_diff_lines: usize = 50000;
 pub var max_syntax_lines: usize = 50000;
 
@@ -22,7 +24,7 @@ pub const application_title = "Flow Control";
 pub const application_subtext = "a programmer's text editor";
 pub const application_description = application_title ++ ": " ++ application_subtext;
 
-pub const std_options = .{
+pub const std_options: std.Options = .{
     // .log_level = if (builtin.mode == .Debug) .debug else .warn,
     .log_level = if (builtin.mode == .Debug) .info else .warn,
     .logFn = log.std_log_function,
@@ -30,7 +32,11 @@ pub const std_options = .{
 
 const renderer = @import("renderer");
 
-pub const panic = if (@hasDecl(renderer, "panic")) renderer.panic else std.builtin.default_panic;
+pub const panic = if (@hasDecl(renderer, "panic")) renderer.panic else default_panic;
+
+fn default_panic(msg: []const u8, _: ?*std.builtin.StackTrace, ret_addr: ?usize) noreturn {
+    return std.debug.defaultPanic(msg, ret_addr);
+}
 
 pub fn main() anyerror!void {
     if (builtin.os.tag == .linux) {
@@ -117,7 +123,7 @@ pub fn main() anyerror!void {
     };
 
     if (args.version)
-        return std.io.getStdOut().writeAll(@embedFile("version_info"));
+        return std.io.getStdOut().writeAll(version_info);
 
     if (args.list_languages) {
         const stdout = std.io.getStdOut();
@@ -153,30 +159,41 @@ pub fn main() anyerror!void {
         }
     } else {
         if (args.trace_level != 0) {
-            env.enable_all_channels();
             var threshold: usize = 1;
-            if (args.trace_level < threshold) {
-                env.disable(thespian.channel.widget);
+            if (args.trace_level >= threshold) {
+                env.enable(thespian.channel.debug);
             }
             threshold += 1;
-            if (args.trace_level < threshold) {
-                env.disable(thespian.channel.receive);
+            if (args.trace_level >= threshold) {
+                env.enable(thespian.channel.widget);
             }
             threshold += 1;
-            if (args.trace_level < threshold) {
-                env.disable(thespian.channel.event);
+            if (args.trace_level >= threshold) {
+                env.enable(thespian.channel.event);
             }
             threshold += 1;
-            if (args.trace_level < threshold) {
-                env.disable(thespian.channel.metronome);
-                env.disable(thespian.channel.execute);
-                env.disable(thespian.channel.link);
+            if (args.trace_level >= threshold) {
+                env.enable(thespian.channel.input);
             }
             threshold += 1;
-            if (args.trace_level < threshold) {
-                env.disable(thespian.channel.input);
-                env.disable(thespian.channel.send);
+            if (args.trace_level >= threshold) {
+                env.enable(thespian.channel.receive);
             }
+            threshold += 1;
+            if (args.trace_level >= threshold) {
+                env.enable(thespian.channel.metronome);
+                env.enable(thespian.channel.execute);
+                env.enable(thespian.channel.link);
+            }
+            threshold += 1;
+            if (args.trace_level >= threshold) {
+                env.enable(thespian.channel.send);
+            }
+            threshold += 1;
+            if (args.trace_level >= threshold) {
+                env.enable_all_channels();
+            }
+
             env.on_trace(trace_to_file);
         }
     }
@@ -395,6 +412,16 @@ pub fn free_config(allocator: std.mem.Allocator, bufs: [][]const u8) void {
 
 var config_mutex: std.Thread.Mutex = .{};
 
+pub fn exists_config(T: type) bool {
+    config_mutex.lock();
+    defer config_mutex.unlock();
+    const json_file_name = get_app_config_file_name(application_name, @typeName(T)) catch return false;
+    const text_file_name = json_file_name[0 .. json_file_name.len - ".json".len];
+    var file = std.fs.openFileAbsolute(text_file_name, .{ .mode = .read_only }) catch return false;
+    defer file.close();
+    return true;
+}
+
 pub fn read_config(T: type, allocator: std.mem.Allocator) struct { T, [][]const u8 } {
     config_mutex.lock();
     defer config_mutex.unlock();
@@ -489,7 +516,7 @@ fn read_cbor_config(
         else => return e,
     }) {
         var known = false;
-        inline for (@typeInfo(T).Struct.fields) |field_info|
+        inline for (@typeInfo(T).@"struct".fields) |field_info|
             if (comptime std.mem.eql(u8, "include_files", field_info.name)) {
                 if (std.mem.eql(u8, field_name, field_info.name)) {
                     known = true;
@@ -540,11 +567,15 @@ pub fn write_config(conf: anytype, allocator: std.mem.Allocator) !void {
 }
 
 fn write_text_config_file(comptime T: type, data: T, file_name: []const u8) !void {
-    const default: T = .{};
     var file = try std.fs.createFileAbsolute(file_name, .{ .truncate = true });
     defer file.close();
     const writer = file.writer();
-    inline for (@typeInfo(T).Struct.fields) |field_info| {
+    return write_config_to_writer(T, data, writer);
+}
+
+pub fn write_config_to_writer(comptime T: type, data: T, writer: anytype) !void {
+    const default: T = .{};
+    inline for (@typeInfo(T).@"struct".fields) |field_info| {
         if (config_eql(
             field_info.type,
             @field(data, field_info.name),
@@ -566,7 +597,7 @@ fn config_eql(comptime T: type, a: T, b: T) bool {
         else => {},
     }
     switch (@typeInfo(T)) {
-        .Bool, .Int, .Float => return a == b,
+        .bool, .int, .float, .@"enum" => return a == b,
         else => {},
     }
     @compileError("unsupported config type " ++ @typeName(T));

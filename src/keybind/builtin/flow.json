@@ -1,6 +1,10 @@
 {
     "project": {
         "press": [
+            ["ctrl+shift+n", "create_new_file"],
+            ["alt+!", "select_task"],
+            ["ctrl+tab", "next_tab"],
+            ["ctrl+shift+tab", "previous_tab"],
             ["ctrl+shift+e", "switch_buffers"],
             ["ctrl+0", "reset_fontsize"],
             ["ctrl+plus", "adjust_fontsize", 1.0],
@@ -95,6 +99,7 @@
             ["alt+down", "pull_down"],
             ["alt+enter", "insert_line"],
             ["alt+f10", "gutter_mode_next"],
+            ["alt+shift+f10", "gutter_style_next"],
             ["alt+f12", "goto_declaration"],
             ["alt+shift+p", "open_command_palette"],
             ["alt+shift+d", "dupe_up"],
@@ -209,6 +214,7 @@
             ["k", "open_keybind_config"],
             ["t", "change_theme"],
             ["f", "change_fontface"],
+            ["v", "open_version_info"],
             ["q", "quit"],
             ["ctrl+f ctrl+f ctrl+f ctrl+f ctrl+f", "home_sheeran"],
             ["ctrl+j", "toggle_panel"],
@@ -251,7 +257,6 @@
             ["ctrl+p", "palette_menu_up"],
             ["ctrl+n", "palette_menu_down"],
             ["ctrl+e", "palette_menu_down"],
-            ["ctrl+shift+e", "palette_menu_down"],
             ["ctrl+r", "palette_menu_down"],
             ["ctrl+t", "palette_menu_down"],
             ["ctrl+v", "system_paste"],
@@ -285,6 +290,7 @@
             ["page_up", "palette_menu_pageup"],
             ["page_down", "palette_menu_pagedown"],
             ["enter", "palette_menu_activate"],
+            ["delete", "palette_menu_delete_item"],
             ["backspace", "overlay_delete_backwards"]
         ],
         "release": [
@@ -313,6 +319,25 @@
             ["ctrl+l", "scroll_view_center_cycle"],
             ["escape", "mini_mode_cancel"],
             ["backspace", "mini_mode_cancel"]
+        ]
+    },
+    "mini/buffer": {
+        "press": [
+            ["ctrl+q", "quit"],
+            ["ctrl+v", "system_paste"],
+            ["ctrl+u", "mini_mode_reset"],
+            ["ctrl+g", "mini_mode_cancel"],
+            ["ctrl+c", "mini_mode_cancel"],
+            ["ctrl+l", "scroll_view_center_cycle"],
+            ["ctrl+i", "mini_mode_insert_bytes", "\t"],
+            ["ctrl+space", "mini_mode_cancel"],
+            ["ctrl+backspace", "mini_mode_reset"],
+            ["alt+v", "system_paste"],
+            ["alt+shift+v", "system_paste"],
+            ["tab", "mini_mode_try_complete_file"],
+            ["escape", "mini_mode_cancel"],
+            ["enter", "mini_mode_select"],
+            ["backspace", "mini_mode_delete_backwards"]
         ]
     },
     "mini/file_browser": {

@@ -3,7 +3,6 @@ const build_options = @import("build_options");
 const tp = @import("thespian");
 const cbor = @import("cbor");
 const log = @import("log");
-const config = @import("config");
 const project_manager = @import("project_manager");
 const root = @import("root");
 const tracy = @import("tracy");
@@ -16,34 +15,34 @@ const keybind = @import("keybind");
 
 const Widget = @import("Widget.zig");
 const MessageFilter = @import("MessageFilter.zig");
-const mainview = @import("mainview.zig");
+const MainView = @import("mainview.zig");
 
 const Allocator = std.mem.Allocator;
 
 allocator: Allocator,
-rdr: renderer,
-config: config,
+rdr_: renderer,
+config_: @import("config"),
 frame_time: usize, // in microseconds
 frame_clock: tp.metronome,
 frame_clock_running: bool = false,
 frame_last_time: i64 = 0,
 receiver: Receiver,
-mainview: Widget,
-message_filters: MessageFilter.List,
-input_mode: ?Mode = null,
+mainview_: ?Widget = null,
+message_filters_: MessageFilter.List,
+input_mode_: ?Mode = null,
 delayed_init_done: bool = false,
 delayed_init_input_mode: ?Mode = null,
-input_mode_outer: ?Mode = null,
-input_listeners: EventHandler.List,
+input_mode_outer_: ?Mode = null,
+input_listeners_: EventHandler.List,
 keyboard_focus: ?Widget = null,
-mini_mode: ?MiniMode = null,
+mini_mode_: ?MiniMode = null,
 hover_focus: ?*Widget = null,
 last_hover_x: c_int = -1,
 last_hover_y: c_int = -1,
 commands: Commands = undefined,
 logger: log.Logger,
 drag_source: ?*Widget = null,
-theme: Widget.Theme,
+theme_: Widget.Theme,
 idle_frame_count: usize = 0,
 unrendered_input_events_count: usize = 0,
 init_timer: ?tp.timeout,
@@ -54,8 +53,8 @@ render_pending: bool = false,
 keepalive_timer: ?tp.Cancellable = null,
 mouse_idle_timer: ?tp.Cancellable = null,
 default_cursor: keybind.CursorShape = .default,
-fontface: []const u8 = "",
-fontfaces: ?std.ArrayList([]const u8) = null,
+fontface_: []const u8 = "",
+fontfaces_: std.ArrayListUnmanaged([]const u8) = .{},
 enable_mouse_idle_timer: bool = false,
 
 const keepalive = std.time.us_per_day * 365; // one year
@@ -84,13 +83,11 @@ fn start(args: StartArgs) tp.result {
 }
 
 fn init(allocator: Allocator) !*Self {
-    var self = try allocator.create(Self);
-
-    var conf, const conf_bufs = root.read_config(config, allocator);
+    var conf, const conf_bufs = root.read_config(@import("config"), allocator);
     defer root.free_config(allocator, conf_bufs);
 
-    const theme = get_theme_by_name(conf.theme) orelse get_theme_by_name("dark_modern") orelse return tp.exit("unknown theme");
-    conf.theme = theme.name;
+    const theme_ = get_theme_by_name(conf.theme) orelse get_theme_by_name("dark_modern") orelse return tp.exit("unknown theme");
+    conf.theme = theme_.name;
     conf.whitespace_mode = try allocator.dupe(u8, conf.whitespace_mode);
     conf.input_mode = try allocator.dupe(u8, conf.input_mode);
     conf.top_bar = try allocator.dupe(u8, conf.top_bar);
@@ -106,35 +103,35 @@ fn init(allocator: Allocator) !*Self {
     const frame_time = std.time.us_per_s / conf.frame_rate;
     const frame_clock = try tp.metronome.init(frame_time);
 
+    var self = try allocator.create(Self);
     self.* = .{
         .allocator = allocator,
-        .config = conf,
-        .rdr = try renderer.init(allocator, self, tp.env.get().is("no-alternate"), dispatch_initialized),
+        .config_ = conf,
+        .rdr_ = try renderer.init(allocator, self, tp.env.get().is("no-alternate"), dispatch_initialized),
         .frame_time = frame_time,
         .frame_clock = frame_clock,
         .frame_clock_running = true,
         .receiver = Receiver.init(receive, self),
-        .mainview = undefined,
-        .message_filters = MessageFilter.List.init(allocator),
-        .input_listeners = EventHandler.List.init(allocator),
+        .message_filters_ = MessageFilter.List.init(allocator),
+        .input_listeners_ = EventHandler.List.init(allocator),
         .logger = log.logger("tui"),
         .init_timer = if (build_options.gui) null else try tp.timeout.init_ms(init_delay, tp.message.fmt(
             .{"init"},
         )),
-        .theme = theme,
+        .theme_ = theme_,
         .no_sleep = tp.env.get().is("no-sleep"),
     };
     instance_ = self;
     defer instance_ = null;
 
     self.default_cursor = std.meta.stringToEnum(keybind.CursorShape, conf.default_cursor) orelse .default;
-    self.config.default_cursor = @tagName(self.default_cursor);
-    self.rdr.handler_ctx = self;
-    self.rdr.dispatch_input = dispatch_input;
-    self.rdr.dispatch_mouse = dispatch_mouse;
-    self.rdr.dispatch_mouse_drag = dispatch_mouse_drag;
-    self.rdr.dispatch_event = dispatch_event;
-    try self.rdr.run();
+    self.config_.default_cursor = @tagName(self.default_cursor);
+    self.rdr_.handler_ctx = self;
+    self.rdr_.dispatch_input = dispatch_input;
+    self.rdr_.dispatch_mouse = dispatch_mouse;
+    self.rdr_.dispatch_mouse_drag = dispatch_mouse_drag;
+    self.rdr_.dispatch_event = dispatch_event;
+    try self.rdr_.run();
 
     try frame_clock.start();
     try self.commands.init(self);
@@ -147,11 +144,11 @@ fn init(allocator: Allocator) !*Self {
             try self.listen_sigwinch();
         },
     }
-    self.mainview = try mainview.create(allocator);
-    self.resize();
+    self.mainview_ = try MainView.create(allocator);
+    resize();
     self.set_terminal_style();
-    try self.rdr.render();
-    try self.save_config();
+    try self.rdr_.render();
+    try save_config();
     try self.init_input_namespace();
     if (tp.env.get().is("restore-session")) {
         command.executeName("restore_session", .{}) catch |e| self.logger.err("restore_session", e);
@@ -162,19 +159,19 @@ fn init(allocator: Allocator) !*Self {
 }
 
 fn init_input_namespace(self: *Self) !void {
-    var mode_parts = std.mem.splitScalar(u8, self.config.input_mode, '/');
+    var mode_parts = std.mem.splitScalar(u8, self.config_.input_mode, '/');
     const namespace_name = mode_parts.first();
     keybind.set_namespace(namespace_name) catch {
         self.logger.print_err("keybind", "unknown mode {s}", .{namespace_name});
         try keybind.set_namespace("flow");
-        self.config.input_mode = "flow";
-        try self.save_config();
+        self.config_.input_mode = "flow";
+        try save_config();
     };
 }
 
 fn init_delayed(self: *Self) !void {
     self.delayed_init_done = true;
-    if (self.input_mode) |_| {} else {
+    if (self.input_mode_) |_| {} else {
         if (self.delayed_init_input_mode) |delayed_init_input_mode| {
             try enter_input_mode(self, delayed_init_input_mode);
             self.delayed_init_input_mode = null;
@@ -195,24 +192,24 @@ fn deinit(self: *Self) void {
         t.deinit();
         self.keepalive_timer = null;
     }
-    if (self.input_mode) |*m| {
+    if (self.input_mode_) |*m| {
         m.deinit();
-        self.input_mode = null;
+        self.input_mode_ = null;
     }
     if (self.delayed_init_input_mode) |*m| {
         m.deinit();
         self.delayed_init_input_mode = null;
     }
     self.commands.deinit();
-    self.mainview.deinit(self.allocator);
-    self.message_filters.deinit();
-    self.input_listeners.deinit();
+    if (self.mainview_) |*mv| mv.deinit(self.allocator);
+    self.message_filters_.deinit();
+    self.input_listeners_.deinit();
     if (self.frame_clock_running)
         self.frame_clock.stop() catch {};
     if (self.sigwinch_signal) |sig| sig.deinit();
     self.frame_clock.deinit();
-    self.rdr.stop();
-    self.rdr.deinit();
+    self.rdr_.stop();
+    self.rdr_.deinit();
     self.logger.deinit();
     self.allocator.destroy(self);
 }
@@ -256,7 +253,7 @@ fn receive(self: *Self, from: tp.pid_ref, m: tp.message) tp.result {
 
 fn receive_safe(self: *Self, from: tp.pid_ref, m: tp.message) !void {
     if (try m.match(.{ "RDR", tp.more })) {
-        self.rdr.process_renderer_event(m.buf) catch |e| switch (e) {
+        self.rdr_.process_renderer_event(m.buf) catch |e| switch (e) {
             error.UnexpectedRendererEvent => return tp.unexpected(m),
             else => return e,
         };
@@ -266,7 +263,7 @@ fn receive_safe(self: *Self, from: tp.pid_ref, m: tp.message) !void {
         return;
     }
 
-    if (self.message_filters.filter(from, m) catch |e| return self.logger.err("filter", e))
+    if (self.message_filters_.filter(from, m) catch |e| return self.logger.err("filter", e))
         return;
 
     var cmd: []const u8 = undefined;
@@ -296,7 +293,7 @@ fn receive_safe(self: *Self, from: tp.pid_ref, m: tp.message) !void {
     }
 
     if (try m.match(.{"restart"})) {
-        _ = try self.mainview.msg(.{"write_restore_info"});
+        if (mainview()) |mv| mv.write_restore_info();
         project_manager.shutdown();
         self.final_exit = "restart";
         return;
@@ -305,13 +302,13 @@ fn receive_safe(self: *Self, from: tp.pid_ref, m: tp.message) !void {
     if (builtin.os.tag != .windows)
         if (try m.match(.{"sigwinch"})) {
             try self.listen_sigwinch();
-            self.rdr.sigwinch() catch |e| return self.logger.err("query_resize", e);
+            self.rdr_.sigwinch() catch |e| return self.logger.err("query_resize", e);
             return;
         };
 
     if (try m.match(.{"resize"})) {
-        self.resize();
-        const box = self.screen();
+        resize();
+        const box = screen();
         message("{d}x{d}", .{ box.w, box.h });
         return;
     }
@@ -391,20 +388,16 @@ fn receive_safe(self: *Self, from: tp.pid_ref, m: tp.message) !void {
         return self.enter_overlay_mode(@import("mode/overlay/fontface_palette.zig").Type);
     }
 
-    var fontface: []const u8 = undefined;
-    if (try m.match(.{ "fontface", "current", tp.extract(&fontface) })) {
-        if (self.fontface.len > 0) self.allocator.free(self.fontface);
-        self.fontface = "";
-        self.fontface = try self.allocator.dupe(u8, fontface);
+    var fontface_: []const u8 = undefined;
+    if (try m.match(.{ "fontface", "current", tp.extract(&fontface_) })) {
+        if (self.fontface_.len > 0) self.allocator.free(self.fontface_);
+        self.fontface_ = "";
+        self.fontface_ = try self.allocator.dupe(u8, fontface_);
         return;
     }
 
-    if (try m.match(.{ "fontface", tp.extract(&fontface) })) {
-        var fontfaces = if (self.fontfaces) |*p| p else blk: {
-            self.fontfaces = std.ArrayList([]const u8).init(self.allocator);
-            break :blk &self.fontfaces.?;
-        };
-        try fontfaces.append(try self.allocator.dupe(u8, fontface));
+    if (try m.match(.{ "fontface", tp.extract(&fontface_) })) {
+        try self.fontfaces_.append(self.allocator, try self.allocator.dupe(u8, fontface_));
         return;
     }
 
@@ -427,20 +420,20 @@ fn render(self: *Self) void {
     {
         const frame = tracy.initZone(@src(), .{ .name = "tui update" });
         defer frame.deinit();
-        self.mainview.update();
+        if (self.mainview_) |mv| mv.update();
     }
 
     const more = ret: {
         const frame = tracy.initZone(@src(), .{ .name = "tui render" });
         defer frame.deinit();
-        self.rdr.stdplane().erase();
-        break :ret self.mainview.render(&self.theme);
+        self.rdr_.stdplane().erase();
+        break :ret if (self.mainview_) |mv| mv.render(&self.theme_) else false;
     };
 
     {
         const frame = tracy.initZone(@src(), .{ .name = renderer.log_name ++ " render" });
         defer frame.deinit();
-        self.rdr.render() catch |e| self.logger.err("render", e);
+        self.rdr_.render() catch |e| self.logger.err("render", e);
         tracy.frameMark();
     }
 
@@ -464,13 +457,13 @@ fn render(self: *Self) void {
 }
 
 fn active_event_handler(self: *Self) ?EventHandler {
-    const mode = self.input_mode orelse return null;
+    const mode = self.input_mode_ orelse return null;
     return mode.event_handler orelse mode.input_handler;
 }
 
 fn dispatch_flush_input_event(self: *Self) !void {
     var buf: [32]u8 = undefined;
-    const mode = self.input_mode orelse return;
+    const mode = self.input_mode_ orelse return;
     try mode.input_handler.send(tp.self_pid(), try tp.message.fmtbuf(&buf, .{"F"}));
     if (mode.event_handler) |eh| try eh.send(tp.self_pid(), try tp.message.fmtbuf(&buf, .{"F"}));
 }
@@ -487,15 +480,14 @@ fn dispatch_input(ctx: *anyopaque, cbor_msg: []const u8) void {
     const m: tp.message = .{ .buf = cbor_msg };
     const from = tp.self_pid();
     self.unrendered_input_events_count += 1;
-    tp.trace(tp.channel.input, m);
-    self.input_listeners.send(from, m) catch {};
+    self.input_listeners_.send(from, m) catch {};
     if (self.keyboard_focus) |w|
         if (w.send(from, m) catch |e| ret: {
             self.logger.err("focus", e);
             break :ret false;
         })
             return;
-    if (self.input_mode) |mode|
+    if (self.input_mode_) |mode|
         mode.input_handler.send(from, m) catch |e| self.logger.err("input handler", e);
 }
 
@@ -543,7 +535,7 @@ fn find_coord_widget(self: *Self, y: usize, x: usize) ?*Widget {
         }
     };
     var ctx: Ctx = .{ .y = y, .x = x };
-    _ = self.mainview.walk(&ctx, Ctx.find);
+    if (self.mainview_) |*mv| _ = mv.walk(&ctx, Ctx.find);
     return ctx.widget;
 }
 
@@ -560,7 +552,7 @@ fn is_live_widget_ptr(self: *Self, w_: *Widget) bool {
         }
     };
     var ctx: Ctx = .{ .w = w_ };
-    return self.mainview.walk(&ctx, Ctx.find);
+    return if (self.mainview_) |*mv| mv.walk(&ctx, Ctx.find) else false;
 }
 
 fn send_widgets(self: *Self, from: tp.pid_ref, m: tp.message) error{Exit}!bool {
@@ -569,13 +561,15 @@ fn send_widgets(self: *Self, from: tp.pid_ref, m: tp.message) error{Exit}!bool {
     tp.trace(tp.channel.widget, m);
     return if (self.keyboard_focus) |w|
         w.send(from, m)
+    else if (self.mainview_) |mv|
+        mv.send(from, m)
     else
-        self.mainview.send(from, m);
+        false;
 }
 
 fn send_mouse(self: *Self, y: c_int, x: c_int, from: tp.pid_ref, m: tp.message) tp.result {
     tp.trace(tp.channel.input, m);
-    _ = self.input_listeners.send(from, m) catch {};
+    _ = self.input_listeners_.send(from, m) catch {};
     if (self.keyboard_focus) |w| {
         _ = try w.send(from, m);
         return;
@@ -586,7 +580,7 @@ fn send_mouse(self: *Self, y: c_int, x: c_int, from: tp.pid_ref, m: tp.message) 
 
 fn send_mouse_drag(self: *Self, y: c_int, x: c_int, from: tp.pid_ref, m: tp.message) tp.result {
     tp.trace(tp.channel.input, m);
-    _ = self.input_listeners.send(from, m) catch {};
+    _ = self.input_listeners_.send(from, m) catch {};
     if (self.keyboard_focus) |w| {
         _ = try w.send(from, m);
         return;
@@ -623,27 +617,30 @@ fn clear_hover_focus(self: *Self) tp.result {
     self.hover_focus = null;
 }
 
-pub fn refresh_hover(self: *Self) void {
+pub fn refresh_hover() void {
+    const self = current();
     self.clear_hover_focus() catch return;
     _ = self.update_hover(self.last_hover_y, self.last_hover_x) catch {};
 }
 
-pub fn save_config(self: *const Self) !void {
-    try root.write_config(self.config, self.allocator);
+pub fn save_config() !void {
+    const self = current();
+    try root.write_config(self.config_, self.allocator);
 }
 
-pub fn is_mainview_focused(self: *const Self) bool {
-    return self.mini_mode == null and self.input_mode_outer == null;
+pub fn is_mainview_focused() bool {
+    const self = current();
+    return self.mini_mode_ == null and self.input_mode_outer_ == null;
 }
 
 fn enter_overlay_mode(self: *Self, mode: type) command.Result {
     command.executeName("disable_fast_scroll", .{}) catch {};
     command.executeName("disable_jump_mode", .{}) catch {};
-    if (self.mini_mode) |_| try cmds.exit_mini_mode(self, .{});
-    if (self.input_mode_outer) |_| try cmds.exit_overlay_mode(self, .{});
-    self.input_mode_outer = self.input_mode;
-    self.input_mode = try mode.create(self.allocator);
-    self.refresh_hover();
+    if (self.mini_mode_) |_| try cmds.exit_mini_mode(self, .{});
+    if (self.input_mode_outer_) |_| try cmds.exit_overlay_mode(self, .{});
+    self.input_mode_outer_ = self.input_mode_;
+    self.input_mode_ = try mode.create(self.allocator);
+    refresh_hover();
 }
 
 fn get_input_mode(self: *Self, mode_name: []const u8) !Mode {
@@ -651,106 +648,106 @@ fn get_input_mode(self: *Self, mode_name: []const u8) !Mode {
 }
 
 fn enter_input_mode(self: *Self, new_mode: Mode) command.Result {
-    if (self.mini_mode) |_| try cmds.exit_mini_mode(self, .{});
-    if (self.input_mode_outer) |_| try cmds.exit_overlay_mode(self, .{});
-    if (self.input_mode) |*m| {
+    if (self.mini_mode_) |_| try cmds.exit_mini_mode(self, .{});
+    if (self.input_mode_outer_) |_| try cmds.exit_overlay_mode(self, .{});
+    if (self.input_mode_) |*m| {
         m.deinit();
-        self.input_mode = null;
+        self.input_mode_ = null;
     }
-    self.input_mode = new_mode;
+    self.input_mode_ = new_mode;
 }
 
 fn refresh_input_mode(self: *Self) command.Result {
-    const mode = (self.input_mode orelse return).mode;
+    const mode = (self.input_mode_ orelse return).mode;
     var new_mode = self.get_input_mode(mode) catch ret: {
         self.logger.print("unknown mode {s}", .{mode});
         break :ret try self.get_input_mode(keybind.default_mode);
     };
     errdefer new_mode.deinit();
-    if (self.input_mode) |*m| {
+    if (self.input_mode_) |*m| {
         m.deinit();
-        self.input_mode = null;
+        self.input_mode_ = null;
     }
-    self.input_mode = new_mode;
+    self.input_mode_ = new_mode;
 }
-pub const enter_mode_meta = .{ .arguments = &.{.string} };
 
 const cmds = struct {
     pub const Target = Self;
     const Ctx = command.Context;
+    const Meta = command.Metadata;
     const Result = command.Result;
 
     pub fn restart(_: *Self, _: Ctx) Result {
         try tp.self_pid().send("restart");
     }
-    pub const restart_meta = .{ .description = "Restart flow (without saving)" };
+    pub const restart_meta: Meta = .{ .description = "Restart flow (without saving)" };
 
     pub fn force_terminate(self: *Self, _: Ctx) Result {
         self.deinit();
         root.print_exit_status({}, "FORCE TERMINATE");
         root.exit(99);
     }
-    pub const force_terminate_meta = .{ .description = "Force quit without saving" };
+    pub const force_terminate_meta: Meta = .{ .description = "Force quit without saving" };
 
     pub fn set_theme(self: *Self, ctx: Ctx) Result {
         var name: []const u8 = undefined;
         if (!try ctx.args.match(.{tp.extract(&name)}))
             return tp.exit_error(error.InvalidSetThemeArgument, null);
-        self.theme = get_theme_by_name(name) orelse {
+        self.theme_ = get_theme_by_name(name) orelse {
             self.logger.print("theme not found: {s}", .{name});
             return;
         };
-        self.config.theme = self.theme.name;
+        self.config_.theme = self.theme_.name;
         self.set_terminal_style();
-        self.logger.print("theme: {s}", .{self.theme.description});
-        try self.save_config();
+        self.logger.print("theme: {s}", .{self.theme_.description});
+        try save_config();
     }
-    pub const set_theme_meta = .{ .arguments = &.{.string} };
+    pub const set_theme_meta: Meta = .{ .arguments = &.{.string} };
 
     pub fn theme_next(self: *Self, _: Ctx) Result {
-        self.theme = get_next_theme_by_name(self.theme.name);
-        self.config.theme = self.theme.name;
+        self.theme_ = get_next_theme_by_name(self.theme_.name);
+        self.config_.theme = self.theme_.name;
         self.set_terminal_style();
-        self.logger.print("theme: {s}", .{self.theme.description});
-        try self.save_config();
+        self.logger.print("theme: {s}", .{self.theme_.description});
+        try save_config();
     }
-    pub const theme_next_meta = .{ .description = "Switch to next color theme" };
+    pub const theme_next_meta: Meta = .{ .description = "Switch to next color theme" };
 
     pub fn theme_prev(self: *Self, _: Ctx) Result {
-        self.theme = get_prev_theme_by_name(self.theme.name);
-        self.config.theme = self.theme.name;
+        self.theme_ = get_prev_theme_by_name(self.theme_.name);
+        self.config_.theme = self.theme_.name;
         self.set_terminal_style();
-        self.logger.print("theme: {s}", .{self.theme.description});
-        try self.save_config();
+        self.logger.print("theme: {s}", .{self.theme_.description});
+        try save_config();
     }
-    pub const theme_prev_meta = .{ .description = "Switch to previous color theme" };
+    pub const theme_prev_meta: Meta = .{ .description = "Switch to previous color theme" };
 
     pub fn toggle_whitespace_mode(self: *Self, _: Ctx) Result {
-        self.config.whitespace_mode = if (std.mem.eql(u8, self.config.whitespace_mode, "none"))
+        self.config_.whitespace_mode = if (std.mem.eql(u8, self.config_.whitespace_mode, "none"))
             "indent"
-        else if (std.mem.eql(u8, self.config.whitespace_mode, "indent"))
+        else if (std.mem.eql(u8, self.config_.whitespace_mode, "indent"))
             "leading"
-        else if (std.mem.eql(u8, self.config.whitespace_mode, "leading"))
+        else if (std.mem.eql(u8, self.config_.whitespace_mode, "leading"))
             "eol"
-        else if (std.mem.eql(u8, self.config.whitespace_mode, "eol"))
+        else if (std.mem.eql(u8, self.config_.whitespace_mode, "eol"))
             "tabs"
-        else if (std.mem.eql(u8, self.config.whitespace_mode, "tabs"))
+        else if (std.mem.eql(u8, self.config_.whitespace_mode, "tabs"))
             "visible"
-        else if (std.mem.eql(u8, self.config.whitespace_mode, "visible"))
+        else if (std.mem.eql(u8, self.config_.whitespace_mode, "visible"))
             "full"
         else
             "none";
-        try self.save_config();
+        try save_config();
         var buf: [32]u8 = undefined;
-        const m = try tp.message.fmtbuf(&buf, .{ "whitespace_mode", self.config.whitespace_mode });
+        const m = try tp.message.fmtbuf(&buf, .{ "whitespace_mode", self.config_.whitespace_mode });
         _ = try self.send_widgets(tp.self_pid(), m);
-        self.logger.print("whitespace rendering {s}", .{self.config.whitespace_mode});
+        self.logger.print("whitespace rendering {s}", .{self.config_.whitespace_mode});
     }
-    pub const toggle_whitespace_mode_meta = .{ .description = "Switch to next whitespace rendering mode" };
+    pub const toggle_whitespace_mode_meta: Meta = .{ .description = "Switch to next whitespace rendering mode" };
 
     pub fn toggle_input_mode(self: *Self, _: Ctx) Result {
-        var it = std.mem.splitScalar(u8, self.config.input_mode, '/');
-        self.config.input_mode = it.first();
+        var it = std.mem.splitScalar(u8, self.config_.input_mode, '/');
+        self.config_.input_mode = it.first();
 
         const namespaces = keybind.get_namespaces(self.allocator) catch |e| return tp.exit_error(e, @errorReturnTrace());
         defer {
@@ -758,18 +755,18 @@ const cmds = struct {
             self.allocator.free(namespaces);
         }
         var found = false;
-        self.config.input_mode = blk: for (namespaces) |namespace| {
+        self.config_.input_mode = blk: for (namespaces) |namespace| {
             if (found) break :blk try self.allocator.dupe(u8, namespace);
-            if (std.mem.eql(u8, namespace, self.config.input_mode))
+            if (std.mem.eql(u8, namespace, self.config_.input_mode))
                 found = true;
         } else try self.allocator.dupe(u8, namespaces[0]);
 
-        try self.save_config();
-        self.logger.print("input mode {s}", .{self.config.input_mode});
-        try keybind.set_namespace(self.config.input_mode);
+        try save_config();
+        self.logger.print("input mode {s}", .{self.config_.input_mode});
+        try keybind.set_namespace(self.config_.input_mode);
         return self.refresh_input_mode();
     }
-    pub const toggle_input_mode_meta = .{ .description = "Switch to next input mode" };
+    pub const toggle_input_mode_meta: Meta = .{ .description = "Switch to next input mode" };
 
     pub fn enter_mode(self: *Self, ctx: Ctx) Result {
         var mode: []const u8 = undefined;
@@ -788,124 +785,157 @@ const cmds = struct {
         }
         return self.enter_input_mode(new_mode);
     }
-    pub const enter_mode_meta = .{ .arguments = &.{.string} };
+    pub const enter_mode_meta: Meta = .{ .arguments = &.{.string} };
 
     pub fn enter_mode_default(self: *Self, _: Ctx) Result {
         return enter_mode(self, Ctx.fmt(.{keybind.default_mode}));
     }
-    pub const enter_mode_default_meta = .{};
+    pub const enter_mode_default_meta: Meta = .{};
 
     pub fn open_command_palette(self: *Self, _: Ctx) Result {
         return self.enter_overlay_mode(@import("mode/overlay/command_palette.zig").Type);
     }
-    pub const open_command_palette_meta = .{ .description = "Show/Run commands" };
+    pub const open_command_palette_meta: Meta = .{ .description = "Show/Run commands" };
 
     pub fn insert_command_name(self: *Self, _: Ctx) Result {
         return self.enter_overlay_mode(@import("mode/overlay/list_all_commands_palette.zig").Type);
     }
-    pub const insert_command_name_meta = .{ .description = "Insert command name" };
+    pub const insert_command_name_meta: Meta = .{ .description = "Insert command name" };
 
     pub fn open_recent(self: *Self, _: Ctx) Result {
         return self.enter_overlay_mode(@import("mode/overlay/open_recent.zig"));
     }
-    pub const open_recent_meta = .{ .description = "Open recent file" };
+    pub const open_recent_meta: Meta = .{ .description = "Open recent file" };
 
     pub fn open_recent_project(self: *Self, _: Ctx) Result {
         return self.enter_overlay_mode(@import("mode/overlay/open_recent_project.zig").Type);
     }
-    pub const open_recent_project_meta = .{ .description = "Open recent project" };
+    pub const open_recent_project_meta: Meta = .{ .description = "Open recent project" };
 
     pub fn switch_buffers(self: *Self, _: Ctx) Result {
         return self.enter_overlay_mode(@import("mode/overlay/buffer_palette.zig").Type);
     }
-    pub const switch_buffers_meta = .{ .description = "Switch buffers" };
+    pub const switch_buffers_meta: Meta = .{ .description = "Switch buffers" };
+
+    pub fn select_task(self: *Self, _: Ctx) Result {
+        return self.enter_overlay_mode(@import("mode/overlay/task_palette.zig").Type);
+    }
+    pub const select_task_meta: Meta = .{ .description = "Select a task to run" };
+
+    pub fn add_task(self: *Self, ctx: Ctx) Result {
+        return enter_mini_mode(self, struct {
+            pub const Type = @import("mode/mini/buffer.zig").Create(@This());
+            pub const create = Type.create;
+            pub fn name(_: *Type) []const u8 {
+                return @import("mode/overlay/task_palette.zig").name;
+            }
+            pub fn select(self_: *Type) void {
+                project_manager.add_task(self_.input.items) catch |e| {
+                    const logger = log.logger("tui");
+                    logger.err("add_task", e);
+                    logger.deinit();
+                };
+                command.executeName("exit_mini_mode", .{}) catch {};
+                command.executeName("select_task", .{}) catch {};
+            }
+        }, ctx);
+    }
+    pub const add_task_meta: Meta = .{ .description = "Add a task to run" };
+
+    pub fn delete_task(_: *Self, ctx: Ctx) Result {
+        var task: []const u8 = undefined;
+        if (!try ctx.args.match(.{tp.extract(&task)}))
+            return error.InvalidDeleteTaskArgument;
+        project_manager.delete_task(task) catch |e| return tp.exit_error(e, @errorReturnTrace());
+    }
+    pub const delete_task_meta: Meta = .{};
 
     pub fn change_theme(self: *Self, _: Ctx) Result {
         return self.enter_overlay_mode(@import("mode/overlay/theme_palette.zig").Type);
     }
-    pub const change_theme_meta = .{ .description = "Select color theme" };
+    pub const change_theme_meta: Meta = .{ .description = "Select color theme" };
 
     pub fn change_file_type(self: *Self, _: Ctx) Result {
         return self.enter_overlay_mode(@import("mode/overlay/file_type_palette.zig").Type);
     }
-    pub const change_file_type_meta = .{ .description = "Change file type" };
+    pub const change_file_type_meta: Meta = .{ .description = "Change file type" };
 
     pub fn change_fontface(self: *Self, _: Ctx) Result {
         if (build_options.gui)
-            self.rdr.get_fontfaces();
+            self.rdr_.get_fontfaces();
     }
-    pub const change_fontface_meta = .{ .description = "Select font face" };
+    pub const change_fontface_meta: Meta = .{ .description = "Select font face" };
 
     pub fn exit_overlay_mode(self: *Self, _: Ctx) Result {
-        self.rdr.cursor_disable();
-        if (self.input_mode_outer == null) return;
-        if (self.input_mode) |*mode| mode.deinit();
-        self.input_mode = self.input_mode_outer;
-        self.input_mode_outer = null;
-        self.refresh_hover();
+        self.rdr_.cursor_disable();
+        if (self.input_mode_outer_ == null) return;
+        if (self.input_mode_) |*mode| mode.deinit();
+        self.input_mode_ = self.input_mode_outer_;
+        self.input_mode_outer_ = null;
+        refresh_hover();
     }
-    pub const exit_overlay_mode_meta = .{};
+    pub const exit_overlay_mode_meta: Meta = .{};
 
     pub fn find(self: *Self, ctx: Ctx) Result {
         return enter_mini_mode(self, @import("mode/mini/find.zig"), ctx);
     }
-    pub const find_meta = .{ .description = "Find in current file" };
+    pub const find_meta: Meta = .{ .description = "Find in current file" };
 
     pub fn find_in_files(self: *Self, ctx: Ctx) Result {
         return enter_mini_mode(self, @import("mode/mini/find_in_files.zig"), ctx);
     }
-    pub const find_in_files_meta = .{ .description = "Find in all project files" };
+    pub const find_in_files_meta: Meta = .{ .description = "Find in all project files" };
 
     pub fn goto(self: *Self, ctx: Ctx) Result {
         return enter_mini_mode(self, @import("mode/mini/goto.zig"), ctx);
     }
-    pub const goto_meta = .{ .description = "Goto line" };
+    pub const goto_meta: Meta = .{ .description = "Goto line" };
 
     pub fn move_to_char(self: *Self, ctx: Ctx) Result {
         return enter_mini_mode(self, @import("mode/mini/move_to_char.zig"), ctx);
     }
-    pub const move_to_char_meta = .{ .description = "Move cursor to matching character" };
+    pub const move_to_char_meta: Meta = .{ .description = "Move cursor to matching character" };
 
     pub fn open_file(self: *Self, ctx: Ctx) Result {
         return enter_mini_mode(self, @import("mode/mini/open_file.zig"), ctx);
     }
-    pub const open_file_meta = .{ .description = "Open file" };
+    pub const open_file_meta: Meta = .{ .description = "Open file" };
 
     pub fn save_as(self: *Self, ctx: Ctx) Result {
         return enter_mini_mode(self, @import("mode/mini/save_as.zig"), ctx);
     }
-    pub const save_as_meta = .{ .description = "Save as" };
+    pub const save_as_meta: Meta = .{ .description = "Save as" };
 
     fn enter_mini_mode(self: *Self, comptime mode: anytype, ctx: Ctx) !void {
         command.executeName("disable_fast_scroll", .{}) catch {};
         command.executeName("disable_jump_mode", .{}) catch {};
-        const input_mode, const mini_mode = try mode.create(self.allocator, ctx);
-        if (self.mini_mode) |_| try exit_mini_mode(self, .{});
-        if (self.input_mode_outer) |_| try exit_overlay_mode(self, .{});
-        if (self.input_mode_outer != null) @panic("exit_overlay_mode failed");
-        self.input_mode_outer = self.input_mode;
-        self.input_mode = input_mode;
-        self.mini_mode = mini_mode;
+        const input_mode_, const mini_mode_ = try mode.create(self.allocator, ctx);
+        if (self.mini_mode_) |_| try exit_mini_mode(self, .{});
+        if (self.input_mode_outer_) |_| try exit_overlay_mode(self, .{});
+        if (self.input_mode_outer_ != null) @panic("exit_overlay_mode failed");
+        self.input_mode_outer_ = self.input_mode_;
+        self.input_mode_ = input_mode_;
+        self.mini_mode_ = mini_mode_;
     }
 
     pub fn exit_mini_mode(self: *Self, _: Ctx) Result {
-        self.rdr.cursor_disable();
-        if (self.mini_mode) |_| {} else return;
-        if (self.input_mode) |*mode| mode.deinit();
-        self.input_mode = self.input_mode_outer;
-        self.input_mode_outer = null;
-        self.mini_mode = null;
+        self.rdr_.cursor_disable();
+        if (self.mini_mode_) |_| {} else return;
+        if (self.input_mode_) |*mode| mode.deinit();
+        self.input_mode_ = self.input_mode_outer_;
+        self.input_mode_outer_ = null;
+        self.mini_mode_ = null;
     }
-    pub const exit_mini_mode_meta = .{};
+    pub const exit_mini_mode_meta: Meta = .{};
 
     pub fn open_keybind_config(self: *Self, _: Ctx) Result {
-        var mode_parts = std.mem.splitScalar(u8, self.config.input_mode, '/');
+        var mode_parts = std.mem.splitScalar(u8, self.config_.input_mode, '/');
         const namespace_name = mode_parts.first();
         const file_name = try keybind.get_or_create_namespace_config_file(self.allocator, namespace_name);
         try tp.self_pid().send(.{ "cmd", "navigate", .{ .file = file_name } });
         self.logger.print("restart flow to use changed key bindings", .{});
     }
-    pub const open_keybind_config_meta = .{ .description = "Edit key bindings" };
+    pub const open_keybind_config_meta: Meta = .{ .description = "Edit key bindings" };
 
     pub fn run_async(self: *Self, ctx: Ctx) Result {
         var iter = ctx.args.buf;
@@ -946,27 +976,27 @@ const cmds = struct {
         }
         try tp.self_pid().send_raw(.{ .buf = msg_cb.items });
     }
-    pub const run_async_meta = .{};
+    pub const run_async_meta: Meta = .{};
 
     pub fn enter_vim_mode(_: *Self, _: Ctx) Result {
         try @import("mode/vim.zig").init();
     }
-    pub const enter_vim_mode_meta = .{};
+    pub const enter_vim_mode_meta: Meta = .{};
 
     pub fn exit_vim_mode(_: *Self, _: Ctx) Result {
         @import("mode/vim.zig").deinit();
     }
-    pub const exit_vim_mode_meta = .{};
+    pub const exit_vim_mode_meta: Meta = .{};
 
     pub fn enter_helix_mode(_: *Self, _: Ctx) Result {
         try @import("mode/helix.zig").init();
     }
-    pub const enter_helix_mode_meta = .{};
+    pub const enter_helix_mode_meta: Meta = .{};
 
     pub fn exit_helix_mode(_: *Self, _: Ctx) Result {
         @import("mode/helix.zig").deinit();
     }
-    pub const exit_helix_mode_meta = .{};
+    pub const exit_helix_mode_meta: Meta = .{};
 };
 
 pub const MiniMode = struct {
@@ -980,12 +1010,52 @@ pub const KeybindHints = keybind.KeybindHints;
 
 threadlocal var instance_: ?*Self = null;
 
-pub fn current() *Self {
+fn current() *Self {
     return instance_ orelse @panic("tui call out of context");
 }
 
+pub fn rdr() *renderer {
+    return &current().rdr_;
+}
+
+pub fn message_filters() *MessageFilter.List {
+    return &current().message_filters_;
+}
+
+pub fn input_listeners() *EventHandler.List {
+    return &current().input_listeners_;
+}
+
+pub fn input_mode() ?*Mode {
+    return if (current().input_mode_) |*p| p else null;
+}
+
+pub fn input_mode_outer() ?*Mode {
+    return if (current().input_mode_outer_) |*p| p else null;
+}
+
+pub fn mini_mode() ?*MiniMode {
+    return if (current().mini_mode_) |*p| p else null;
+}
+
+pub fn config() *const @import("config") {
+    return &current().config_;
+}
+
+pub fn config_mut() *@import("config") {
+    return &current().config_;
+}
+
+pub fn mainview() ?*MainView {
+    return if (current().mainview_) |*mv| mv.dynamic_cast(MainView) else null;
+}
+
+pub fn mainview_widget() Widget {
+    return current().mainview_ orelse @panic("tui main view not found");
+}
+
 pub fn get_active_editor() ?*@import("editor.zig").Editor {
-    if (current().mainview.dynamic_cast(mainview)) |mv_| if (mv_.get_active_editor()) |editor|
+    if (mainview()) |mv_| if (mv_.get_active_editor()) |editor|
         return editor;
     return null;
 }
@@ -997,7 +1067,7 @@ pub fn get_active_selection(allocator: std.mem.Allocator) ?[]u8 {
 }
 
 pub fn get_buffer_manager() ?*@import("Buffer").Manager {
-    return if (current().mainview.dynamic_cast(mainview)) |mv_| &mv_.buffer_manager else null;
+    return if (mainview()) |mv| &mv.buffer_manager else null;
 }
 
 fn context_check() void {
@@ -1005,9 +1075,9 @@ fn context_check() void {
 }
 
 pub fn get_mode() []const u8 {
-    return if (current().mini_mode) |m|
+    return if (current().mini_mode_) |m|
         m.name
-    else if (current().input_mode) |m|
+    else if (current().input_mode_) |m|
         m.name
     else
         "INI";
@@ -1015,7 +1085,7 @@ pub fn get_mode() []const u8 {
 
 pub fn get_keybind_mode() ?Mode {
     const self = current();
-    return self.input_mode orelse self.delayed_init_input_mode;
+    return self.input_mode_ orelse self.delayed_init_input_mode;
 }
 
 pub fn reset_drag_context() void {
@@ -1031,34 +1101,58 @@ pub fn need_render() void {
     }
 }
 
-pub fn resize(self: *Self) void {
-    self.mainview.resize(self.screen());
-    self.refresh_hover();
+pub fn resize() void {
+    mainview_widget().resize(screen());
+    refresh_hover();
     need_render();
 }
 
-pub fn stdplane(self: *Self) renderer.Plane {
-    return self.rdr.stdplane();
+pub fn plane() renderer.Plane {
+    return current().rdr_.stdplane();
 }
 
-pub fn screen(self: *Self) Widget.Box {
-    return Widget.Box.from(self.rdr.stdplane());
+fn stdplane(self: *Self) renderer.Plane {
+    return self.rdr_.stdplane();
+}
+
+pub fn egc_chunk_width(chunk: []const u8, abs_col: usize, tab_width: usize) usize {
+    return plane().egc_chunk_width(chunk, abs_col, tab_width);
+}
+
+pub fn egc_last(egcs: []const u8) []const u8 {
+    return plane().egc_last(egcs);
+}
+
+pub fn screen() Widget.Box {
+    return Widget.Box.from(plane());
+}
+
+pub fn fontface() []const u8 {
+    return current().fontface_;
+}
+
+pub fn fontfaces(allocator: std.mem.Allocator) error{OutOfMemory}![][]const u8 {
+    return current().fontfaces_.toOwnedSlice(allocator);
+}
+
+pub fn theme() *const Widget.Theme {
+    return &current().theme_;
 }
 
 pub fn get_theme_by_name(name: []const u8) ?Widget.Theme {
-    for (Widget.themes) |theme| {
-        if (std.mem.eql(u8, theme.name, name))
-            return theme;
+    for (Widget.themes) |theme_| {
+        if (std.mem.eql(u8, theme_.name, name))
+            return theme_;
     }
     return null;
 }
 
 pub fn get_next_theme_by_name(name: []const u8) Widget.Theme {
     var next = false;
-    for (Widget.themes) |theme| {
+    for (Widget.themes) |theme_| {
         if (next)
-            return theme;
-        if (std.mem.eql(u8, theme.name, name))
+            return theme_;
+        if (std.mem.eql(u8, theme_.name, name))
             next = true;
     }
     return Widget.themes[0];
@@ -1066,24 +1160,24 @@ pub fn get_next_theme_by_name(name: []const u8) Widget.Theme {
 
 pub fn get_prev_theme_by_name(name: []const u8) Widget.Theme {
     var prev: ?Widget.Theme = null;
-    for (Widget.themes) |theme| {
-        if (std.mem.eql(u8, theme.name, name))
+    for (Widget.themes) |theme_| {
+        if (std.mem.eql(u8, theme_.name, name))
             return prev orelse Widget.themes[Widget.themes.len - 1];
-        prev = theme;
+        prev = theme_;
     }
     return Widget.themes[Widget.themes.len - 1];
 }
 
-pub fn find_scope_style(theme: *const Widget.Theme, scope: []const u8) ?Widget.Theme.Token {
+pub fn find_scope_style(theme_: *const Widget.Theme, scope: []const u8) ?Widget.Theme.Token {
     return if (find_scope_fallback(scope)) |tm_scope|
-        scope_to_theme_token(theme, tm_scope) orelse
-            scope_to_theme_token(theme, scope)
+        scope_to_theme_token(theme_, tm_scope) orelse
+            scope_to_theme_token(theme_, scope)
     else
-        scope_to_theme_token(theme, scope);
+        scope_to_theme_token(theme_, scope);
 }
 
-fn scope_to_theme_token(theme: *const Widget.Theme, document_scope: []const u8) ?Widget.Theme.Token {
-    var idx = theme.tokens.len - 1;
+fn scope_to_theme_token(theme_: *const Widget.Theme, document_scope: []const u8) ?Widget.Theme.Token {
+    var idx = theme_.tokens.len - 1;
     var matched: ?Widget.Theme.Token = null;
     var done = false;
     while (!done) : (if (idx == 0) {
@@ -1091,7 +1185,7 @@ fn scope_to_theme_token(theme: *const Widget.Theme, document_scope: []const u8) 
     } else {
         idx -= 1;
     }) {
-        const token = theme.tokens[idx];
+        const token = theme_.tokens[idx];
         const theme_scope = Widget.scopes[token.id];
         const last_matched_scope = if (matched) |tok| Widget.scopes[tok.id] else "";
         if (theme_scope.len < last_matched_scope.len) continue;
@@ -1160,14 +1254,15 @@ pub const fallbacks: []const FallBack = &[_]FallBack{
 };
 
 fn set_terminal_style(self: *Self) void {
-    if (build_options.gui or self.config.enable_terminal_color_scheme) {
-        self.rdr.set_terminal_style(self.theme.editor);
-        self.rdr.set_terminal_cursor_color(self.theme.editor_cursor.bg.?);
+    if (build_options.gui or self.config_.enable_terminal_color_scheme) {
+        self.rdr_.set_terminal_style(self.theme_.editor);
+        self.rdr_.set_terminal_cursor_color(self.theme_.editor_cursor.bg.?);
     }
 }
 
-pub fn get_cursor_shape(self: *Self) renderer.CursorShape {
-    const shape = if (self.input_mode) |mode| mode.cursor_shape orelse self.default_cursor else self.default_cursor;
+pub fn get_cursor_shape() renderer.CursorShape {
+    const self = current();
+    const shape = if (self.input_mode_) |mode| mode.cursor_shape orelse self.default_cursor else self.default_cursor;
     return switch (shape) {
         .default => .default,
         .block_blink => .block_blink,
@@ -1179,15 +1274,15 @@ pub fn get_cursor_shape(self: *Self) renderer.CursorShape {
     };
 }
 
-pub fn is_cursor_beam(self: *Self) bool {
-    return switch (self.get_cursor_shape()) {
+pub fn is_cursor_beam() bool {
+    return switch (get_cursor_shape()) {
         .beam, .beam_blink => true,
         else => false,
     };
 }
 
-pub fn get_selection_style(self: *Self) @import("Buffer").Selection.Style {
-    return if (self.input_mode) |mode| mode.selection_style else .normal;
+pub fn get_selection_style() @import("Buffer").Selection.Style {
+    return if (current().input_mode_) |mode| mode.selection_style else .normal;
 }
 
 pub fn message(comptime fmt: anytype, args: anytype) void {

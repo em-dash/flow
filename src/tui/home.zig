@@ -38,6 +38,7 @@ const menu_commands = if (build_options.gui) &[_][]const u8{
     "toggle_input_mode",
     "change_theme",
     "change_fontface",
+    "open_version_info",
     "quit",
 } else &[_][]const u8{
     "open_help",
@@ -49,6 +50,7 @@ const menu_commands = if (build_options.gui) &[_][]const u8{
     "open_keybind_config",
     "toggle_input_mode",
     "change_theme",
+    "open_version_info",
     "quit",
 };
 
@@ -65,7 +67,7 @@ pub fn create(allocator: std.mem.Allocator, parent: Widget) !Widget {
         .allocator = allocator,
         .parent = parent.plane.*,
         .plane = n,
-        .menu = try Menu.create(*Self, allocator, w, .{ .ctx = self, .on_render = menu_on_render }),
+        .menu = try Menu.create(*Self, allocator, w.plane.*, .{ .ctx = self, .on_render = menu_on_render }),
         .input_namespace = keybind.get_namespace(),
     };
     try self.commands.init(self);
@@ -126,7 +128,7 @@ pub fn walk(self: *Self, walk_ctx: *anyopaque, f: Widget.WalkFn, w: *Widget) boo
 pub fn receive(_: *Self, _: tp.pid_ref, m: tp.message) error{Exit}!bool {
     var hover: bool = false;
     if (try m.match(.{ "H", tp.extract(&hover) })) {
-        tui.current().rdr.request_mouse_cursor_default(hover);
+        tui.rdr().request_mouse_cursor_default(hover);
         tui.need_render();
         return true;
     }
@@ -243,28 +245,29 @@ const Commands = command.Collection(cmds);
 const cmds = struct {
     pub const Target = Self;
     const Ctx = command.Context;
+    const Meta = command.Metadata;
     const Result = command.Result;
 
     pub fn save_all(_: *Self, _: Ctx) Result {
         if (tui.get_buffer_manager()) |bm|
             bm.save_all() catch |e| return tp.exit_error(e, @errorReturnTrace());
     }
-    pub const save_all_meta = .{ .description = "Save all changed files" };
+    pub const save_all_meta: Meta = .{ .description = "Save all changed files" };
 
     pub fn home_menu_down(self: *Self, _: Ctx) Result {
         self.menu.select_down();
     }
-    pub const home_menu_down_meta = .{};
+    pub const home_menu_down_meta: Meta = .{};
 
     pub fn home_menu_up(self: *Self, _: Ctx) Result {
         self.menu.select_up();
     }
-    pub const home_menu_up_meta = .{};
+    pub const home_menu_up_meta: Meta = .{};
 
     pub fn home_menu_activate(self: *Self, _: Ctx) Result {
         self.menu.activate_selected();
     }
-    pub const home_menu_activate_meta = .{};
+    pub const home_menu_activate_meta: Meta = .{};
 
     pub fn home_sheeran(self: *Self, _: Ctx) Result {
         self.fire = if (self.fire) |*fire| ret: {
@@ -272,7 +275,7 @@ const cmds = struct {
             break :ret null;
         } else try Fire.init(self.allocator, self.plane);
     }
-    pub const home_sheeran_meta = .{};
+    pub const home_sheeran_meta: Meta = .{};
 };
 
 const Fire = struct {

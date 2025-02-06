@@ -8,6 +8,7 @@ const root = @import("root");
 
 const Plane = @import("renderer").Plane;
 const style = @import("renderer").style;
+const styles = @import("renderer").styles;
 const input = @import("input");
 const command = @import("command");
 const EventHandler = @import("EventHandler");
@@ -16,6 +17,7 @@ const Widget = @import("Widget.zig");
 const MessageFilter = @import("MessageFilter.zig");
 const tui = @import("tui.zig");
 const ed = @import("editor.zig");
+const DigitStyle = @import("config").DigitStyle;
 
 allocator: Allocator,
 plane: Plane,
@@ -27,11 +29,12 @@ row: u32 = 1,
 line: usize = 0,
 linenum: bool,
 relative: bool,
+render_style: DigitStyle,
 highlight: bool,
 symbols: bool,
 width: usize = 4,
 editor: *ed.Editor,
-diff: diff.AsyncDiffer,
+diff_: diff.AsyncDiffer,
 diff_symbols: std.ArrayList(Symbol),
 
 const Self = @This();
@@ -45,15 +48,16 @@ pub fn create(allocator: Allocator, parent: Widget, event_source: Widget, editor
         .allocator = allocator,
         .plane = try Plane.init(&(Widget.Box{}).opts(@typeName(Self)), parent.plane.*),
         .parent = parent,
-        .linenum = tui.current().config.gutter_line_numbers,
-        .relative = tui.current().config.gutter_line_numbers_relative,
-        .highlight = tui.current().config.highlight_current_line_gutter,
-        .symbols = tui.current().config.gutter_symbols,
+        .linenum = tui.config().gutter_line_numbers,
+        .relative = tui.config().gutter_line_numbers_relative,
+        .render_style = tui.config().gutter_line_numbers_style,
+        .highlight = tui.config().highlight_current_line_gutter,
+        .symbols = tui.config().gutter_symbols,
         .editor = editor,
-        .diff = try diff.create(),
+        .diff_ = try diff.create(),
         .diff_symbols = std.ArrayList(Symbol).init(allocator),
     };
-    try tui.current().message_filters.add(MessageFilter.bind(self, filter_receive));
+    try tui.message_filters().add(MessageFilter.bind(self, filter_receive));
     try event_source.subscribe(EventHandler.bind(self, handle_event));
     return self.widget();
 }
@@ -65,7 +69,7 @@ pub fn widget(self: *Self) Widget {
 pub fn deinit(self: *Self, allocator: Allocator) void {
     self.diff_symbols_clear();
     self.diff_symbols.deinit();
-    tui.current().message_filters.remove_ptr(self);
+    tui.message_filters().remove_ptr(self);
     self.plane.deinit();
     allocator.destroy(self);
 }
@@ -93,6 +97,8 @@ pub fn receive(self: *Self, _: tp.pid_ref, m: tp.message) error{Exit}!bool {
 
     if (try m.match(.{ "B", input.event.press, @intFromEnum(input.mouse.BUTTON1), tp.any, tp.any, tp.extract(&y), tp.any, tp.extract(&ypx) }))
         return self.primary_click(y);
+    if (try m.match(.{ "B", input.event.press, @intFromEnum(input.mouse.BUTTON2), tp.any, tp.any, tp.extract(&y), tp.any, tp.extract(&ypx) }))
+        return self.middle_click();
     if (try m.match(.{ "B", input.event.press, @intFromEnum(input.mouse.BUTTON3), tp.any, tp.any, tp.extract(&y), tp.any, tp.extract(&ypx) }))
         return self.secondary_click();
     if (try m.match(.{ "D", input.event.press, @intFromEnum(input.mouse.BUTTON1), tp.any, tp.any, tp.extract(&y), tp.any, tp.extract(&ypx) }))
@@ -107,9 +113,8 @@ pub fn receive(self: *Self, _: tp.pid_ref, m: tp.message) error{Exit}!bool {
 
 fn update_width(self: *Self) void {
     if (!self.linenum) return;
-    var buf: [31]u8 = undefined;
-    const tmp = std.fmt.bufPrint(&buf, "{d}", .{self.lines}) catch return;
-    self.width = if (self.relative and tmp.len > 4) 4 else @max(tmp.len, 2);
+    const width = int_width(self.lines);
+    self.width = if (self.relative and width > 4) 4 else @max(width, 2);
     self.width += if (self.symbols) 3 else 1;
 }
 
@@ -130,7 +135,7 @@ pub fn render(self: *Self, theme: *const Widget.Theme) bool {
     self.plane.set_style(theme.editor_gutter);
     _ = self.plane.fill(" ");
     if (self.linenum) {
-        const relative = self.relative or if (tui.current().input_mode) |mode| mode.line_numbers == .relative else false;
+        const relative = self.relative or if (tui.input_mode()) |mode| mode.line_numbers == .relative else false;
         if (relative)
             self.render_relative(theme)
         else
@@ -163,17 +168,17 @@ pub fn render_linear(self: *Self, theme: *const Widget.Theme) void {
     var linenum = self.row + 1;
     var rows = self.rows;
     var diff_symbols = self.diff_symbols.items;
-    var buf: [31:0]u8 = undefined;
     while (rows > 0) : (rows -= 1) {
         if (linenum > self.lines) return;
         if (linenum == self.line + 1) {
             self.plane.set_style(.{ .fg = theme.editor_gutter_active.fg });
-            self.plane.on_styles(style.bold);
+            self.plane.on_styles(styles.bold);
         } else {
             self.plane.set_style(.{ .fg = theme.editor_gutter.fg });
-            self.plane.off_styles(style.bold);
+            self.plane.off_styles(styles.bold);
         }
-        _ = self.plane.print_aligned_right(@intCast(pos), "{s}", .{std.fmt.bufPrintZ(&buf, "{d} ", .{linenum}) catch return}) catch {};
+        try self.plane.cursor_move_yx(@intCast(pos), 0);
+        try self.print_digits(linenum, self.render_style);
         if (self.highlight and linenum == self.line + 1)
             self.render_line_highlight(pos, theme);
         self.render_diff_symbols(&diff_symbols, pos, linenum, theme);
@@ -190,13 +195,17 @@ pub fn render_relative(self: *Self, theme: *const Widget.Theme) void {
     var abs_linenum = self.row + 1;
     var rows = self.rows;
     var diff_symbols = self.diff_symbols.items;
-    var buf: [31:0]u8 = undefined;
     while (rows > 0) : (rows -= 1) {
         if (pos > self.lines - @as(u32, @intCast(row))) return;
         self.plane.set_style(if (linenum == 0) theme.editor_gutter_active else theme.editor_gutter);
         const val = @abs(if (linenum == 0) line else linenum);
-        const fmt = std.fmt.bufPrintZ(&buf, "{d} ", .{val}) catch return;
-        _ = self.plane.print_aligned_right(@intCast(pos), "{s}", .{if (fmt.len > 6) "==> " else fmt}) catch {};
+
+        try self.plane.cursor_move_yx(@intCast(pos), 0);
+        if (val > 999999)
+            _ = self.plane.print_aligned_right(@intCast(pos), "==> ", .{}) catch {}
+        else
+            self.print_digits(val, self.render_style) catch {};
+
         if (self.highlight and linenum == 0)
             self.render_line_highlight(pos, theme);
         self.render_diff_symbols(&diff_symbols, pos, abs_linenum, theme);
@@ -273,7 +282,8 @@ fn render_diagnostic(self: *Self, diag: *const ed.Diagnostic, theme: *const Widg
     _ = self.plane.putc(&cell) catch {};
 }
 
-fn primary_click(self: *const Self, y: i32) error{Exit}!bool {
+fn primary_click(self: *const Self, y_: i32) error{Exit}!bool {
+    const y = self.editor.plane.abs_y_to_rel(y_);
     var line = self.row + 1;
     line += @intCast(y);
     if (line > self.lines) line = self.lines;
@@ -284,13 +294,19 @@ fn primary_click(self: *const Self, y: i32) error{Exit}!bool {
     return true;
 }
 
-fn primary_drag(_: *const Self, y: i32) error{Exit}!bool {
+fn primary_drag(self: *const Self, y_: i32) error{Exit}!bool {
+    const y = self.editor.plane.abs_y_to_rel(y_);
     try command.executeName("drag_to", command.fmt(.{ y + 1, 0 }));
     return true;
 }
 
 fn secondary_click(_: *Self) error{Exit}!bool {
     try command.executeName("gutter_mode_next", .{});
+    return true;
+}
+
+fn middle_click(_: *Self) error{Exit}!bool {
+    try command.executeName("gutter_style_next", .{});
     return true;
 }
 
@@ -313,7 +329,7 @@ fn diff_update(self: *Self) !void {
     const new = editor.get_current_root() orelse return;
     const old = if (editor.buffer) |buffer| buffer.last_save orelse return else return;
     const eol_mode = if (editor.buffer) |buffer| buffer.file_eol_mode else return;
-    return self.diff.diff(diff_result, new, old, eol_mode);
+    return self.diff_.diff(diff_result, new, old, eol_mode);
 }
 
 fn diff_result(from: tp.pid_ref, edits: []diff.Diff) void {
@@ -397,3 +413,33 @@ pub fn filter_receive(self: *Self, _: tp.pid_ref, m: tp.message) MessageFilter.E
     }
     return false;
 }
+
+fn int_width(n_: usize) usize {
+    var n = n_;
+    var size: usize = 1;
+    while (true) {
+        n /= 10;
+        if (n == 0) return size;
+        size += 1;
+    }
+}
+
+fn print_digits(self: *Self, n_: anytype, style_: DigitStyle) !void {
+    var n = n_;
+    var buf: [12][]const u8 = undefined;
+    var digits: std.ArrayListUnmanaged([]const u8) = .initBuffer(&buf);
+    while (true) {
+        digits.addOneAssumeCapacity().* = get_digit(n % 10, style_);
+        n /= 10;
+        if (n == 0) break;
+    }
+    std.mem.reverse([]const u8, digits.items);
+    try self.plane.cursor_move_yx(@intCast(self.plane.cursor_y()), @intCast(self.width - digits.items.len - 1));
+    for (digits.items) |digit| _ = try self.plane.putstr(digit);
+}
+
+pub fn print_digit(plane: *Plane, n: anytype, style_: DigitStyle) !void {
+    _ = try plane.putstr(get_digit(n, style_));
+}
+
+const get_digit = @import("fonts.zig").get_digit;

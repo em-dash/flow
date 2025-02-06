@@ -18,7 +18,6 @@ const Button = @import("../../Button.zig");
 const InputBox = @import("../../InputBox.zig");
 const Menu = @import("../../Menu.zig");
 const Widget = @import("../../Widget.zig");
-const mainview = @import("../../mainview.zig");
 const ModalBackground = @import("../../ModalBackground.zig");
 
 const Self = @This();
@@ -38,12 +37,12 @@ commands: Commands = undefined,
 buffer_manager: ?*BufferManager,
 
 pub fn create(allocator: std.mem.Allocator) !tui.Mode {
-    const mv = tui.current().mainview.dynamic_cast(mainview) orelse return error.NotFound;
+    const mv = tui.mainview() orelse return error.NotFound;
     const self: *Self = try allocator.create(Self);
     self.* = .{
         .allocator = allocator,
-        .modal = try ModalBackground.create(*Self, allocator, tui.current().mainview, .{ .ctx = self }),
-        .menu = try Menu.create(*Self, allocator, tui.current().mainview, .{
+        .modal = try ModalBackground.create(*Self, allocator, tui.mainview_widget(), .{ .ctx = self }),
+        .menu = try Menu.create(*Self, allocator, tui.plane(), .{
             .ctx = self,
             .on_render = on_render_menu,
             .on_resize = on_resize_menu,
@@ -56,7 +55,7 @@ pub fn create(allocator: std.mem.Allocator) !tui.Mode {
         .buffer_manager = tui.get_buffer_manager(),
     };
     try self.commands.init(self);
-    try tui.current().message_filters.add(MessageFilter.bind(self, receive_project_manager));
+    try tui.message_filters().add(MessageFilter.bind(self, receive_project_manager));
     self.query_pending = true;
     try project_manager.request_recent_files(max_recent_files);
     self.menu.resize(.{ .y = 0, .x = self.menu_pos_x(), .w = max_menu_width() + 2 });
@@ -72,8 +71,8 @@ pub fn create(allocator: std.mem.Allocator) !tui.Mode {
 
 pub fn deinit(self: *Self) void {
     self.commands.deinit();
-    tui.current().message_filters.remove_ptr(self);
-    if (tui.current().mainview.dynamic_cast(mainview)) |mv| {
+    tui.message_filters().remove_ptr(self);
+    if (tui.mainview()) |mv| {
         mv.floating_views.remove(self.menu.container_widget);
         mv.floating_views.remove(self.modal.widget());
     }
@@ -86,13 +85,13 @@ inline fn menu_width(self: *Self) usize {
 }
 
 inline fn menu_pos_x(self: *Self) usize {
-    const screen_width = tui.current().screen().w;
+    const screen_width = tui.screen().w;
     const width = self.menu_width();
     return if (screen_width <= width) 0 else (screen_width - width) / 2;
 }
 
 inline fn max_menu_width() usize {
-    const width = tui.current().screen().w;
+    const width = tui.screen().w;
     return @max(15, width - (width / 5));
 }
 
@@ -231,14 +230,14 @@ fn delete_word(self: *Self) !void {
     } else {
         self.inputbox.text.shrinkRetainingCapacity(0);
     }
-    self.inputbox.cursor = tui.current().stdplane().egc_chunk_width(self.inputbox.text.items, 0, 8);
+    self.inputbox.cursor = tui.egc_chunk_width(self.inputbox.text.items, 0, 8);
     return self.start_query();
 }
 
 fn delete_code_point(self: *Self) !void {
     if (self.inputbox.text.items.len > 0) {
-        self.inputbox.text.shrinkRetainingCapacity(self.inputbox.text.items.len - tui.current().stdplane().egc_last(self.inputbox.text.items).len);
-        self.inputbox.cursor = tui.current().stdplane().egc_chunk_width(self.inputbox.text.items, 0, 8);
+        self.inputbox.text.shrinkRetainingCapacity(self.inputbox.text.items.len - tui.egc_last(self.inputbox.text.items).len);
+        self.inputbox.cursor = tui.egc_chunk_width(self.inputbox.text.items, 0, 8);
     }
     return self.start_query();
 }
@@ -247,13 +246,13 @@ fn insert_code_point(self: *Self, c: u32) !void {
     var buf: [6]u8 = undefined;
     const bytes = try input.ucs32_to_utf8(&[_]u32{c}, &buf);
     try self.inputbox.text.appendSlice(buf[0..bytes]);
-    self.inputbox.cursor = tui.current().stdplane().egc_chunk_width(self.inputbox.text.items, 0, 8);
+    self.inputbox.cursor = tui.egc_chunk_width(self.inputbox.text.items, 0, 8);
     return self.start_query();
 }
 
 fn insert_bytes(self: *Self, bytes: []const u8) !void {
     try self.inputbox.text.appendSlice(bytes);
-    self.inputbox.cursor = tui.current().stdplane().egc_chunk_width(self.inputbox.text.items, 0, 8);
+    self.inputbox.cursor = tui.egc_chunk_width(self.inputbox.text.items, 0, 8);
     return self.start_query();
 }
 
@@ -273,47 +272,48 @@ const Commands = command.Collection(cmds);
 const cmds = struct {
     pub const Target = Self;
     const Ctx = command.Context;
+    const Meta = command.Metadata;
     const Result = command.Result;
 
     pub fn palette_menu_top(self: *Self, _: Ctx) Result {
         self.menu.select_first();
     }
-    pub const palette_menu_top_meta = .{};
+    pub const palette_menu_top_meta: Meta = .{};
 
     pub fn palette_menu_down(self: *Self, _: Ctx) Result {
         self.menu.select_down();
     }
-    pub const palette_menu_down_meta = .{};
+    pub const palette_menu_down_meta: Meta = .{};
 
     pub fn palette_menu_up(self: *Self, _: Ctx) Result {
         self.menu.select_up();
     }
-    pub const palette_menu_up_meta = .{};
+    pub const palette_menu_up_meta: Meta = .{};
 
     pub fn palette_menu_activate(self: *Self, _: Ctx) Result {
         self.menu.activate_selected();
     }
-    pub const palette_menu_activate_meta = .{};
+    pub const palette_menu_activate_meta: Meta = .{};
 
     pub fn palette_menu_activate_quick(self: *Self, _: Ctx) Result {
         if (self.menu.selected orelse 0 > 0) self.menu.activate_selected();
     }
-    pub const palette_menu_activate_quick_meta = .{};
+    pub const palette_menu_activate_quick_meta: Meta = .{};
 
     pub fn palette_menu_cancel(self: *Self, _: Ctx) Result {
         try self.cmd("exit_overlay_mode", .{});
     }
-    pub const palette_menu_cancel_meta = .{};
+    pub const palette_menu_cancel_meta: Meta = .{};
 
     pub fn overlay_delete_word_left(self: *Self, _: Ctx) Result {
         self.delete_word() catch |e| return tp.exit_error(e, @errorReturnTrace());
     }
-    pub const overlay_delete_word_left_meta = .{ .description = "Delete word to the left" };
+    pub const overlay_delete_word_left_meta: Meta = .{ .description = "Delete word to the left" };
 
     pub fn overlay_delete_backwards(self: *Self, _: Ctx) Result {
         self.delete_code_point() catch |e| return tp.exit_error(e, @errorReturnTrace());
     }
-    pub const overlay_delete_backwards_meta = .{ .description = "Delete backwards" };
+    pub const overlay_delete_backwards_meta: Meta = .{ .description = "Delete backwards" };
 
     pub fn overlay_insert_code_point(self: *Self, ctx: Ctx) Result {
         var egc: u32 = 0;
@@ -321,7 +321,7 @@ const cmds = struct {
             return error.InvalidOpenRecentInsertCodePointArgument;
         self.insert_code_point(egc) catch |e| return tp.exit_error(e, @errorReturnTrace());
     }
-    pub const overlay_insert_code_point_meta = .{ .arguments = &.{.integer} };
+    pub const overlay_insert_code_point_meta: Meta = .{ .arguments = &.{.integer} };
 
     pub fn overlay_insert_bytes(self: *Self, ctx: Ctx) Result {
         var bytes: []const u8 = undefined;
@@ -329,20 +329,20 @@ const cmds = struct {
             return error.InvalidOpenRecentInsertBytesArgument;
         self.insert_bytes(bytes) catch |e| return tp.exit_error(e, @errorReturnTrace());
     }
-    pub const overlay_insert_bytes_meta = .{ .arguments = &.{.string} };
+    pub const overlay_insert_bytes_meta: Meta = .{ .arguments = &.{.string} };
 
     pub fn overlay_toggle_panel(self: *Self, _: Ctx) Result {
         return self.cmd_async("toggle_panel");
     }
-    pub const overlay_toggle_panel_meta = .{};
+    pub const overlay_toggle_panel_meta: Meta = .{};
 
     pub fn overlay_toggle_inputview(self: *Self, _: Ctx) Result {
         return self.cmd_async("toggle_inputview");
     }
-    pub const overlay_toggle_inputview_meta = .{};
+    pub const overlay_toggle_inputview_meta: Meta = .{};
 
     pub fn mini_mode_paste(self: *Self, ctx: Ctx) Result {
         return overlay_insert_bytes(self, ctx);
     }
-    pub const mini_mode_paste_meta = .{ .arguments = &.{.string} };
+    pub const mini_mode_paste_meta: Meta = .{ .arguments = &.{.string} };
 };

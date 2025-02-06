@@ -104,7 +104,29 @@ pub fn request_path_files(max: usize, path: []const u8) (ProjectManagerError || 
     return send(.{ "request_path_files", project, max, path });
 }
 
-pub fn did_open(file_path: []const u8, file_type: *const FileType, version: usize, text: []const u8) (ProjectManagerError || ProjectError)!void {
+pub fn request_tasks(allocator: std.mem.Allocator) (ProjectError || CallError)!tp.message {
+    const project = tp.env.get().str("project");
+    if (project.len == 0)
+        return error.NoProject;
+    return (try get()).pid.call(allocator, request_timeout, .{ "request_tasks", project });
+}
+
+pub fn add_task(task: []const u8) (ProjectManagerError || ProjectError)!void {
+    const project = tp.env.get().str("project");
+    if (project.len == 0)
+        return error.NoProject;
+    return send(.{ "add_task", project, task });
+}
+
+pub fn delete_task(task: []const u8) (ProjectManagerError || ProjectError)!void {
+    const project = tp.env.get().str("project");
+    if (project.len == 0)
+        return error.NoProject;
+    return send(.{ "delete_task", project, task });
+}
+
+pub fn did_open(file_path: []const u8, file_type: *const FileType, version: usize, text: []const u8, ephemeral: bool) (ProjectManagerError || ProjectError)!void {
+    if (ephemeral) return;
     const project = tp.env.get().str("project");
     if (project.len == 0)
         return error.NoProject;
@@ -190,7 +212,8 @@ pub fn hover(file_path: []const u8, row: usize, col: usize) (ProjectManagerError
     return send(.{ "hover", project, file_path, row, col });
 }
 
-pub fn update_mru(file_path: []const u8, row: usize, col: usize) (ProjectManagerError || ProjectError)!void {
+pub fn update_mru(file_path: []const u8, row: usize, col: usize, ephemeral: bool) (ProjectManagerError || ProjectError)!void {
+    if (ephemeral) return;
     const project = tp.env.get().str("project");
     if (project.len == 0)
         return error.NoProject;
@@ -287,6 +310,7 @@ const Process = struct {
         var text_ptr: usize = 0;
         var text_len: usize = 0;
         var n: usize = 0;
+        var task: []const u8 = undefined;
 
         var root_dst: usize = 0;
         var root_src: usize = 0;
@@ -325,6 +349,12 @@ const Process = struct {
             self.query_recent_files(from, project_directory, max, query) catch |e| return from.forward_error(e, @errorReturnTrace()) catch error.ClientFailed;
         } else if (try cbor.match(m.buf, .{ "request_path_files", tp.extract(&project_directory), tp.extract(&max), tp.extract(&path) })) {
             self.request_path_files(from, project_directory, max, path) catch |e| return from.forward_error(e, @errorReturnTrace()) catch error.ClientFailed;
+        } else if (try cbor.match(m.buf, .{ "request_tasks", tp.extract(&project_directory) })) {
+            self.request_tasks(from, project_directory) catch |e| return from.forward_error(e, @errorReturnTrace()) catch error.ClientFailed;
+        } else if (try cbor.match(m.buf, .{ "add_task", tp.extract(&project_directory), tp.extract(&task) })) {
+            self.add_task(project_directory, task) catch |e| return from.forward_error(e, @errorReturnTrace()) catch error.ClientFailed;
+        } else if (try cbor.match(m.buf, .{ "delete_task", tp.extract(&project_directory), tp.extract(&task) })) {
+            self.delete_task(project_directory, task) catch |e| return from.forward_error(e, @errorReturnTrace()) catch error.ClientFailed;
         } else if (try cbor.match(m.buf, .{ "did_open", tp.extract(&project_directory), tp.extract(&path), tp.extract(&file_type), tp.extract_cbor(&language_server), tp.extract(&version), tp.extract(&text_ptr), tp.extract(&text_len) })) {
             const text = if (text_len > 0) @as([*]const u8, @ptrFromInt(text_ptr))[0..text_len] else "";
             self.did_open(project_directory, path, file_type, language_server, version, text) catch |e| return from.forward_error(e, @errorReturnTrace()) catch error.ClientFailed;
@@ -429,6 +459,21 @@ const Process = struct {
     fn request_path_files(self: *Process, from: tp.pid_ref, project_directory: []const u8, max: usize, path: []const u8) (ProjectError || SpawnError || std.fs.Dir.OpenError)!void {
         const project = self.projects.get(project_directory) orelse return error.NoProject;
         try request_path_files_async(self.allocator, from, project, max, path);
+    }
+
+    fn request_tasks(self: *Process, from: tp.pid_ref, project_directory: []const u8) (ProjectError || Project.ClientError)!void {
+        const project = self.projects.get(project_directory) orelse return error.NoProject;
+        try project.request_tasks(from);
+    }
+
+    fn add_task(self: *Process, project_directory: []const u8, task: []const u8) (ProjectError || Project.ClientError)!void {
+        const project = self.projects.get(project_directory) orelse return error.NoProject;
+        try project.add_task(task);
+    }
+
+    fn delete_task(self: *Process, project_directory: []const u8, task: []const u8) (ProjectError || Project.ClientError)!void {
+        const project = self.projects.get(project_directory) orelse return error.NoProject;
+        try project.delete_task(task);
     }
 
     fn did_open(self: *Process, project_directory: []const u8, file_path: []const u8, file_type: []const u8, language_server: []const u8, version: usize, text: []const u8) (ProjectError || Project.StartLspError || CallError || cbor.Error)!void {
@@ -564,6 +609,7 @@ const Process = struct {
     }
 
     fn persist_project(self: *Process, project: *Project) !void {
+        tp.trace(tp.channel.debug, .{ "persist_project", project.name });
         self.logger.print("saving: {s}", .{project.name});
         const file_name = try get_project_state_file_path(self.allocator, project);
         defer self.allocator.free(file_name);
@@ -575,6 +621,7 @@ const Process = struct {
     }
 
     fn restore_project(self: *Process, project: *Project) !void {
+        tp.trace(tp.channel.debug, .{ "restore_project", project.name });
         const file_name = try get_project_state_file_path(self.allocator, project);
         defer self.allocator.free(file_name);
         var file = std.fs.openFileAbsolute(file_name, .{ .mode = .read_only }) catch |e| switch (e) {

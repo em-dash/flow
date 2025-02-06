@@ -145,7 +145,7 @@ fn getConfig() *gui_config {
 }
 
 fn getFieldDefault(field: std.builtin.Type.StructField) ?*const field.type {
-    return @alignCast(@ptrCast(field.default_value orelse return null));
+    return @alignCast(@ptrCast(field.default_value_ptr orelse return null));
 }
 
 fn getDefaultFontFace() FontFace {
@@ -638,6 +638,8 @@ fn sendMouse(
         move,
         left_down,
         left_up,
+        middle_down,
+        middle_up,
         right_down,
         right_up,
     },
@@ -676,13 +678,14 @@ fn sendMouse(
             "B",
             switch (b) {
                 .move => unreachable,
-                .left_down, .right_down => input.event.press,
-                .left_up, .right_up => input.event.release,
+                .left_down, .middle_down, .right_down => input.event.press,
+                .left_up, .middle_up, .right_up => input.event.release,
             },
             switch (b) {
                 .move => unreachable,
                 .left_down, .left_up => @intFromEnum(input.mouse.BUTTON1),
-                .right_down, .right_up => @intFromEnum(input.mouse.BUTTON2),
+                .middle_down, .middle_up => @intFromEnum(input.mouse.BUTTON2),
+                .right_down, .right_up => @intFromEnum(input.mouse.BUTTON3),
             },
             cell.cell.x,
             cell.cell.y,
@@ -1034,6 +1037,14 @@ fn WndProc(
         },
         win32.WM_LBUTTONUP => {
             sendMouse(hwnd, .left_up, wparam, lparam);
+            return 0;
+        },
+        win32.WM_MBUTTONDOWN => {
+            sendMouse(hwnd, .middle_down, wparam, lparam);
+            return 0;
+        },
+        win32.WM_MBUTTONUP => {
+            sendMouse(hwnd, .middle_up, wparam, lparam);
             return 0;
         },
         win32.WM_RBUTTONDOWN => {

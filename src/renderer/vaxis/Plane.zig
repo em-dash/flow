@@ -37,7 +37,7 @@ pub const option = enum {
 };
 
 pub fn init(nopts: *const Options, parent_: Plane) !Plane {
-    const opts = .{
+    const opts: vaxis.Window.ChildOptions = .{
         .x_off = @as(i17, @intCast(nopts.x)),
         .y_off = @as(i17, @intCast(nopts.y)),
         .width = @as(u16, @intCast(nopts.cols)),
@@ -102,6 +102,10 @@ pub fn abs_yx_to_rel_nearest_x(self: Plane, y: c_int, x: c_int, xoffset: c_int) 
 
 pub fn abs_yx_to_rel(self: Plane, y: c_int, x: c_int) struct { c_int, c_int } {
     return .{ y - self.abs_y(), x - self.abs_x() };
+}
+
+pub fn abs_y_to_rel(self: Plane, y: c_int) c_int {
+    return y - self.abs_y();
 }
 
 pub fn rel_yx_to_abs(self: Plane, y: c_int, x: c_int) struct { c_int, c_int } {
