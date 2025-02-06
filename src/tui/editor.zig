@@ -1746,9 +1746,18 @@ pub const Editor = struct {
 
     fn with_selection_const(root: Buffer.Root, move: cursor_operator_const, cursel: *CurSel, metrics: Buffer.Metrics) error{Stop}!void {
         const sel = try cursel.enable_selection(root, metrics);
-        try move(root, &sel.end, metrics);
+        switch (tui.get_selection_style()) {
+            .normal => try move(root, &sel.end, metrics),
+            .inclusive => {
+                const reversed_before = sel.is_reversed();
+                try move(root, &sel.end, metrics);
+                const reversed_after = sel.is_reversed();
+                if (reversed_before and !reversed_after) try sel.begin.move_left(root, metrics);
+                if (!reversed_before and reversed_after) try sel.begin.move_right(root, metrics);
+            },
+        }
+
         cursel.cursor = sel.end;
-        // cursel.cursor = if (sel.is_reversed()) sel.begin else sel.end;
         cursel.check_selection(root, metrics);
     }
 
