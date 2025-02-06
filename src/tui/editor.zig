@@ -2519,7 +2519,7 @@ pub const Editor = struct {
         self.set_clipboard(text.items);
         self.clamp();
     }
-    pub const cut_char_or_selection_meta = .{ .description = "Cut character under cursor or selection" };
+    pub const cut_char_or_selection_meta: Meta = .{ .description = "Cut character under cursor or selection" };
 
     pub fn copy(self: *Self, _: Context) Result {
         const primary = self.get_primary();
@@ -2739,7 +2739,7 @@ pub const Editor = struct {
         self.clamp();
         self.need_render();
     }
-    pub const paste_after_meta = .{ .description = "Paste from internal clipboard at end of selection" };
+    pub const paste_after_meta: Meta = .{ .description = "Paste from internal clipboard at end of selection" };
 
     pub fn delete_forward(self: *Self, _: Context) Result {
         const b = try self.buf_for_update();
@@ -3564,7 +3564,7 @@ pub const Editor = struct {
         };
         self.clamp();
     }
-    pub const move_next_word_end_meta = .{ .description = "Deselect then select to end of word" };
+    pub const move_next_word_end_meta: Meta = .{ .description = "Deselect then select to end of word" };
 
     pub fn select_to_char_left(self: *Self, ctx: Context) Result {
         const root = try self.buf_root();
@@ -3691,7 +3691,7 @@ pub const Editor = struct {
         };
         self.clamp();
     }
-    pub const extend_line_below_meta = .{ .description = "Expand selection to line, then extend down" };
+    pub const extend_line_below_meta: Meta = .{ .description = "Expand selection to line, then extend down" };
 
     fn select_word_at_cursor(self: *Self, cursel: *CurSel) !*Selection {
         const root = try self.buf_root();
