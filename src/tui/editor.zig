@@ -3672,22 +3672,18 @@ pub const Editor = struct {
         const root = self.buf_root() catch return;
 
         for (self.cursels.items) |*cursel_| if (cursel_.*) |*cursel| {
-            if (cursel.cursor.row >= root.lines() - 1) continue;
-            if (cursel.selection == null) cursel.cursor.move_begin();
-
-            const sel = try cursel.enable_selection(root, self.metrics);
-            if (!sel.begin.is_at_begin() and !sel.end.is_at_end(root, self.metrics) or root.line_width(cursel.cursor.row, self.metrics) catch 0 == 1) {
-                try self.select_line_at_cursor(cursel);
-                try sel.end.move_right(root, self.metrics);
-            } else {
-                if (!(cursel.cursor.is_at_begin() and cursel.cursor.is_at_end(root, self.metrics)))
-                    try sel.end.move_right(root, self.metrics);
-                sel.end.move_end(root, self.metrics);
-                try sel.end.move_right(root, self.metrics);
-            }
-            cursel.cursor = cursel.selection.?.end;
-
+            cursel.cursor.move_begin();
+            const sel = cursel.enable_selection(root, self.metrics) catch return;
+            move_cursor_end(root, &sel.end, self.metrics) catch |e| switch (e) {
+                error.Stop => {},
+                else => return e,
+            };
+            move_cursor_right(root, &sel.end, self.metrics) catch |e| switch (e) {
+                error.Stop => {},
+                else => return e,
+            };
             cursel.selection.?.normalize();
+            cursel.cursor = cursel.selection.?.end;
         };
         self.clamp();
     }
